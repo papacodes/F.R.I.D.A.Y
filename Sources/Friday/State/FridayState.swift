@@ -1,6 +1,10 @@
 import Foundation
 import SwiftUI
 
+extension Notification.Name {
+    static let fridayTrigger = Notification.Name("fridayTrigger")
+}
+
 @MainActor
 final class FridayState: ObservableObject {
     static let shared = FridayState()
@@ -15,13 +19,17 @@ final class FridayState: ObservableObject {
     
     @Published var showInfoCard = false
     @Published var modelName = "Gemini 2.5 Flash"
-    
-    // Tracking session greetings
     @Published var hasGreetedThisSession = false
+
+    @Published var lastActivityTime = Date()
 
     func update<T: Equatable>(_ keyPath: ReferenceWritableKeyPath<FridayState, T>, to value: T) {
         if self[keyPath: keyPath] != value {
             self[keyPath: keyPath] = value
         }
+    }
+    
+    func recordActivity() {
+        lastActivityTime = Date()
     }
 }

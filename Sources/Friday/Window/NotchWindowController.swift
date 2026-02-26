@@ -1,13 +1,12 @@
-import AppKit
+@preconcurrency import AppKit
 import SwiftUI
 
 @MainActor
-class NotchWindowController {
+final class NotchWindowController {
     private let panel: NotchWindow
     private(set) var isExpanded = false
-    private var pipeline: GeminiVoicePipeline?
 
-    private let expandedHeight: CGFloat = 350 // Much taller for card + orb
+    private let expandedHeight: CGFloat = 350
     private let collapsedHeight: CGFloat = 32
     private let topOffset: CGFloat = 1
 
@@ -34,7 +33,6 @@ class NotchWindowController {
         let (notchX, notchWidth) = notchGeometry(screen: screen)
         let topOfScreen = screen.frame.maxY + topOffset
 
-        // Ensure at least 320 width for the card
         let finalWidth = max(notchWidth, 320)
         let finalX = notchX - (finalWidth - notchWidth) / 2
 
@@ -62,18 +60,15 @@ class NotchWindowController {
             panel.animator().setFrame(targetFrame, display: true)
         }
 
-        if pipeline == nil {
-            pipeline = GeminiVoicePipeline(state: FridayState.shared)
-        }
-        pipeline?.start()
+        Task { await AppDelegate.pipeline.wake() }
     }
 
     func collapse() {
         guard isExpanded else { return }
         isExpanded = false
 
-        pipeline?.stop()
-        FridayState.shared.showInfoCard = false // Reset card state on collapse
+        FridayState.shared.showInfoCard = false
+        Task { await AppDelegate.pipeline.sleep() }
 
         let screen = NSScreen.main ?? NSScreen.screens[0]
         let (notchX, notchWidth) = notchGeometry(screen: screen)
@@ -107,9 +102,4 @@ class NotchWindowController {
         }
         return (screen.frame.midX - 150, 300)
     }
-}
-
-// Typo fix for timing function
-extension CAMediaTimingFunction {
-    static var standard: CAMediaTimingFunction { CAMediaTimingFunction(name: .default) }
 }

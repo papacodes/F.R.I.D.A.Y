@@ -4,18 +4,19 @@ import AppKit
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowController: NotchWindowController?
     private var hotkeyManager: HotkeyManager?
+    
+    static let pipeline = GeminiVoicePipeline(state: FridayState.shared)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         windowController = NotchWindowController()
-
-        hotkeyManager = HotkeyManager {
+        
+        // HotkeyManager requires the toggle action on init
+        hotkeyManager = HotkeyManager { [weak self] in
             Task { @MainActor in
-                self.windowController?.toggle()
+                self?.windowController?.toggle()
             }
         }
-    }
-
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        return false
+        
+        Task { await AppDelegate.pipeline.start() }
     }
 }

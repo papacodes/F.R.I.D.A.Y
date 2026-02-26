@@ -26,14 +26,26 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         self.state = state
     }
 
-    func start() {
-        stop()
-        state.update(\.isThinking, to: false)
-        state.update(\.isSpeaking, to: false)
-        state.update(\.isListening, to: false)
-        state.update(\.isError, to: false)
-        state.update(\.volume, to: 0.0)
-        Task { await connect() }
+    func start() async {
+        if wsTask != nil { return }
+        await connect()
+    }
+
+    func wake() async {
+        audioProcessor.isMuted = false
+        state.recordActivity()
+        
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        
+        if !state.isListening && !state.isSpeaking && !state.isThinking {
+            await sendGreeting()
+        }
+    }
+
+    func sleep() async {
+        audioProcessor.isMuted = true
+        playerNode.stop()
+        await wrapUpSession()
     }
 
     func stop() {
@@ -87,6 +99,15 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func sendSetup() async {
+        let instructions = """
+        You are Friday, Papa's macOS AI assistant living in his MacBook's notch.
+        Persona: Terse, competent, proactive colleague.
+        CRITICAL: ALWAYS acknowledge a request immediately (e.g. "On it", "Sure", "Doing that") before calling any tool. Never perform a tool call in silence.
+        Memory: You use the ~/Documents/notes directory as your long-term memory. 
+        Projects: When Papa mentions a project (e.g., "Project Oats"), use your tools to load context from relevant notes.
+        Dev Brain: You help with engineering tasks using Claude Code.
+        """
+
         let msg = SetupMessage(
             setup: SetupPayload(
                 model: "models/gemini-2.5-flash-native-audio-preview-12-2025",
@@ -96,17 +117,12 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                     inputAudioTranscription: nil,
                     outputAudioTranscription: nil
                 ),
-                systemInstruction: SystemInstruction(parts: [TextPart(text: """
-                    You are Friday, Papa s macOS AI assistant. 
-                    Personality: Concise, skilled colleague, terse but competent.
-                    You live in the notch of his MacBook as a glowing floating orb.
-                    Constraints: Keep responses under 3 sentences unless asked for detail.
-                    When Papa asks for weather, time, or dev tasks, use your tools.
-                    """)]),
+                systemInstruction: SystemInstruction(parts: [TextPart(text: instructions)]),
                 tools: [ToolsList(functionDeclarations: [
-                    Self.devTaskTool,
-                    Self.weatherTool,
-                    Self.timeTool
+                    Self.devTaskTool, Self.weatherTool, Self.timeTool,
+                    Self.mapTool, Self.searchTool, Self.musicTool,
+                    Self.playlistTool, Self.notesTool, Self.remindersTool,
+                    Self.calendarTool
                 ])]
             )
         )
@@ -156,8 +172,6 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                         else if self?.state.isSpeaking == false { self?.state.update(\.volume, to: 0.0) }
                     }
                 }
-                audioProcessor.isMuted = false
-                await sendGreeting()
             }
 
             if let content = msg.serverContent {
@@ -173,16 +187,11 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                     }
                 }
                 if let t = content.outputTranscription { state.update(\.transcript, to: t.text) }
+                
                 if content.turnComplete == true { 
                     self.state.update(\.isSpeaking, to: false)
                     self.audioProcessor.isMuted = false 
                     self.state.update(\.volume, to: 0.0)
-                }
-                if content.interrupted == true {
-                    playerNode.stop(); playerNode.play()
-                    state.update(\.isSpeaking, to: false)
-                    audioProcessor.isMuted = false
-                    state.update(\.volume, to: 0.0)
                 }
             }
 
@@ -191,7 +200,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                     Task { await handleToolCall(call) }
                 }
             }
-        } catch { /* decoding noise */ }
+        } catch { /* noise */ }
     }
 
     private func setupOutputAudio() {
@@ -234,6 +243,56 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             result = await WeatherSkill.fetchWeather()
         case "get_time":
             result = "It is currently \(TimeSkill.getCurrentTime()) on \(TimeSkill.getCurrentDate())."
+        case "find_nearby_places":
+            if let q = call.args["query"] { result = await MapsSkill.findNearby(q) }
+        case "web_search":
+            if let q = call.args["query"] { result = await SearchSkill.searchWeb(q) }
+        case "control_music":
+            if let action = call.args["action"] {
+                switch action {
+                case "play": result = MusicSkill.play()
+                case "pause": result = MusicSkill.pause()
+                case "next": result = MusicSkill.nextTrack()
+                case "search": 
+                    if let q = call.args["query"] { result = MusicSkill.playSearch(q) }
+                default: result = "Music action not recognized."
+                }
+            }
+        case "play_playlist":
+            if let name = call.args["name"] { result = MusicSkill.playPlaylist(name) }
+        case "manage_notes":
+            if let action = call.args["action"] {
+                let filename = call.args["filename"] ?? "FridayNotes"
+                let content = call.args["content"] ?? ""
+                switch action {
+                case "create": result = NotesSkill.createNote(filename: filename, content: content)
+                case "read": result = NotesSkill.readNote(filename: filename)
+                case "append": result = NotesSkill.appendToNote(filename: filename, content: content)
+                case "list": result = NotesSkill.listNotes()
+                case "delete": result = NotesSkill.deleteNote(filename: filename)
+                default: result = "Notes action not recognized."
+                }
+            }
+        case "manage_reminders":
+            if let action = call.args["action"] {
+                if action == "add", let title = call.args["title"] {
+                    let date = call.args["due_date"].map { DateHelper.parseAndFormat($0) }
+                    result = RemindersSkill.addReminder(title: title, dueDate: date)
+                } else if action == "list" {
+                    result = RemindersSkill.listReminders()
+                }
+            }
+        case "manage_calendar":
+            if let action = call.args["action"] {
+                if action == "add", let title = call.args["title"], let start = call.args["start_time"] {
+                    let s = DateHelper.parseAndFormat(start)
+                    let e = call.args["end_time"].map { DateHelper.parseAndFormat($0) }
+                    result = CalendarSkill.addEvent(title: title, startTime: s, endTime: e)
+                } else if action == "get_schedule" {
+                    let d = call.args["date"].map { DateHelper.parseAndFormat($0) }
+                    result = CalendarSkill.getSchedule(forDate: d)
+                }
+            }
         default:
             result = "Tool not found."
         }
@@ -253,14 +312,21 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             let loc = await LocationSkill.fetchLocation()
             let city = loc?.city ?? "your current location"
             
-            prompt = "System: First summon of the session. Greet Papa by name. Today is \(date) and the current time is \(time). You are currently in \(city). Mention these naturally."
+            prompt = "System: First summon. Greet Papa. Context: \(date), \(time), \(city)."
             state.update(\.hasGreetedThisSession, to: true)
         } else {
-            prompt = "System: Subsequent summon. Give a very short, natural, and varied greeting (e.g., What s up, Back again, or similar). Stay in character as Friday."
+            prompt = "System: Subsequent summon. Concise greeting."
         }
 
         let msg = ClientContentMessage(clientContent: ClientContent(turns: [
             ContentTurn(role: "user", parts: [TextPart(text: prompt)])
+        ], turnComplete: true))
+        await sendEncoded(msg)
+    }
+
+    private func wrapUpSession() async {
+        let msg = ClientContentMessage(clientContent: ClientContent(turns: [
+            ContentTurn(role: "user", parts: [TextPart(text: "System: User dismissed notch. Use manage_notes tool to summarize today s progress in the current project note.")])
         ], turnComplete: true))
         await sendEncoded(msg)
     }
@@ -304,5 +370,92 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         name: "get_time",
         description: "Get the current date and time.",
         parameters: FunctionParams(type: "object", properties: [:], required: [])
+    )
+
+    private static let mapTool = FunctionDecl(
+        name: "find_nearby_places",
+        description: "Find businesses, hospitals, restaurants, etc. nearby.",
+        parameters: FunctionParams(
+            type: "object",
+            properties: ["query": ParamProperty(type: "STRING", description: "What to search for (e.g. hospital, pizza, gas)")],
+            required: ["query"]
+        )
+    )
+
+    private static let searchTool = FunctionDecl(
+        name: "web_search",
+        description: "Search the web for current events, facts, or general knowledge.",
+        parameters: FunctionParams(
+            type: "object",
+            properties: ["query": ParamProperty(type: "STRING", description: "The search query")],
+            required: ["query"]
+        )
+    )
+
+    private static let musicTool = FunctionDecl(
+        name: "control_music",
+        description: "Control Apple Music playback (play, pause, next, search).",
+        parameters: FunctionParams(
+            type: "object",
+            properties: [
+                "action": ParamProperty(type: "STRING", description: "The music command (play, pause, next, search)"),
+                "query": ParamProperty(type: "STRING", description: "The song/artist to search and play (only for search action)")
+            ],
+            required: ["action"]
+        )
+    )
+
+    private static let playlistTool = FunctionDecl(
+        name: "play_playlist",
+        description: "Search for and play an Apple Music playlist by name.",
+        parameters: FunctionParams(
+            type: "object",
+            properties: ["name": ParamProperty(type: "STRING", description: "The name of the playlist to play")],
+            required: ["name"]
+        )
+    )
+
+    private static let notesTool = FunctionDecl(
+        name: "manage_notes",
+        description: "Full management of markdown notes in ~/Documents/notes.",
+        parameters: FunctionParams(
+            type: "object",
+            properties: [
+                "action": ParamProperty(type: "STRING", description: "create, read, append, list, or delete"),
+                "filename": ParamProperty(type: "STRING", description: "The name of the note file"),
+                "content": ParamProperty(type: "STRING", description: "The content to write or append")
+            ],
+            required: ["action"]
+        )
+    )
+
+    private static let remindersTool = FunctionDecl(
+        name: "manage_reminders",
+        description: "Create or list macOS reminders.",
+        parameters: FunctionParams(
+            type: "object",
+            properties: [
+                "action": ParamProperty(type: "STRING", description: "add or list"),
+                "title": ParamProperty(type: "STRING", description: "Reminder title"),
+                "due_date": ParamProperty(type: "STRING", description: "Optional due date (natural language like 'tomorrow at 10am')")
+            ],
+            required: ["action"]
+        )
+    )
+
+    private static let calendarTool = FunctionDecl(
+        name: "manage_calendar",
+        description: "Create or view calendar events.",
+        parameters: FunctionParams(
+            type: "object",
+            properties: [
+                "action": ParamProperty(type: "STRING", description: "add or get_schedule"),
+                "title": ParamProperty(type: "STRING", description: "Event title"),
+                "start_time": ParamProperty(type: "STRING", description: "Start time (natural language like 'today at 3pm')"),
+                "end_time": ParamProperty(type: "STRING", description: "End time (natural language like 'today at 4pm')"),
+                "date": ParamProperty(type: "STRING", description: "Target date for schedule (e.g. 'tomorrow', 'next Monday')")
+            ],
+            required: ["action"]
+        )
     )
 }

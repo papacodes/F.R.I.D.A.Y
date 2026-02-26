@@ -59,6 +59,14 @@ final class AudioProcessor: @unchecked Sendable {
 
             let muted = self.isMuted
             let isActive = rms > 0.01 && !muted
+            
+            // CRITICAL: Signal activity to prevent auto-dismissal
+            if isActive {
+                DispatchQueue.main.async {
+                    FridayState.shared.recordActivity()
+                }
+            }
+            
             self.onActivity?(isActive, rms)
 
             if muted { return }
@@ -69,7 +77,6 @@ final class AudioProcessor: @unchecked Sendable {
 
             self.processingQueue.async {
                 guard let conv = conv, let ws = ws, let target = target else { return }
-
                 let ratio = 16000.0 / hwFormat.sampleRate
                 let outFrames = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
                 guard outFrames > 0, let outBuf = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: outFrames) else { return }
