@@ -28,10 +28,10 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
     func start() {
         stop()
-        state.isThinking = false
-        state.isSpeaking = false
-        state.isListening = false
-        state.isError = false
+        state.update(\.isThinking, to: false)
+        state.update(\.isSpeaking, to: false)
+        state.update(\.isListening, to: false)
+        state.update(\.isError, to: false)
         Task { await connect() }
     }
 
@@ -47,15 +47,15 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         playerNode.stop()
         outputEngine.stop()
         
-        state.isListening = false
-        state.isThinking = false
-        state.isSpeaking = false
+        state.update(\.isListening, to: false)
+        state.update(\.isThinking, to: false)
+        state.update(\.isSpeaking, to: false)
     }
 
     private func connect() async {
         guard !isConnecting else { return }
         guard let apiKey = ProcessInfo.processInfo.environment["GEMINI_API_KEY"], !apiKey.isEmpty else {
-            state.isError = true
+            state.update(\.isError, to: true)
             return
         }
 
@@ -63,7 +63,9 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         let endpoint = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=\(apiKey)"
         guard let url = URL(string: endpoint) else { isConnecting = false; return }
 
-        let request = URLRequest(url: url)
+        var request = URLRequest(url: url)
+        request.setValue("https://aistudio.google.com", forHTTPHeaderField: "Origin")
+
         urlSession = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
         let ws = urlSession!.webSocketTask(with: request)
         ws.resume()
@@ -80,7 +82,6 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         await sendSetup()
         Task { await receiveLoop() }
         isConnecting = false
-        print("Friday: Gemini WebSocket open")
     }
 
     private func sendSetup() async {
@@ -121,19 +122,12 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         }
         
         if wsTask != nil && !isConnecting {
-            print("Friday: Reconnecting in 3s...")
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             if wsTask != nil { await connect() }
         }
     }
 
     private func handleServer(_ data: Data) async {
-        if let raw = String(data: data, encoding: .utf8) {
-            if !raw.contains("inline_data") { 
-                print("Friday received: \(raw)") 
-            }
-        }
-        
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         
@@ -142,14 +136,13 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             
             if let err = msg.error {
                 print("Friday: Gemini API error — \(err.message ?? "no message")")
-                state.isError = true
+                state.update(\.isError, to: true)
                 return
             }
 
             if msg.setupComplete != nil {
-                print("Friday: Gemini ready")
                 audioProcessor.start(ws: wsTask) { [weak self] active in
-                    DispatchQueue.main.async { self?.state.isListening = active }
+                    DispatchQueue.main.async { self?.state.update(\.isListening, to: active) }
                 }
                 audioProcessor.isMuted = false
                 await sendGreeting()
@@ -160,21 +153,21 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                     for part in turn.parts {
                         if let inline = part.inlineData, let audioData = Data(base64Encoded: inline.data) {
                             if !state.isSpeaking {
-                                state.isSpeaking = true
+                                state.update(\.isSpeaking, to: true)
                                 audioProcessor.isMuted = true
                             }
                             playPCMChunk(audioData)
                         }
                     }
                 }
-                if let t = content.outputTranscription { state.transcript = t.text }
+                if let t = content.outputTranscription { state.update(\.transcript, to: t.text) }
                 if content.turnComplete == true { 
-                    self.state.isSpeaking = false
+                    self.state.update(\.isSpeaking, to: false)
                     self.audioProcessor.isMuted = false 
                 }
                 if content.interrupted == true {
                     playerNode.stop(); playerNode.play()
-                    state.isSpeaking = false
+                    state.update(\.isSpeaking, to: false)
                     audioProcessor.isMuted = false
                 }
             }
@@ -210,12 +203,12 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func handleToolCall(_ call: FunctionCall) async {
-        state.isThinking = true
+        state.update(\.isThinking, to: true)
         var result = "Task complete."
         if call.name == "execute_dev_task", let prompt = call.args["prompt"] {
             result = (try? await devBrain.ask(prompt)) ?? "Error running task."
         }
-        state.isThinking = false
+        state.update(\.isThinking, to: false)
         let response = ToolResponseMessage(toolResponse: ToolResponseBody(functionResponses: [
             FunctionResponseItem(id: call.id, name: call.name, response: ["output": result])
         ]))
@@ -224,31 +217,26 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
     private func sendGreeting() async {
         let msg = ClientContentMessage(clientContent: ClientContent(turns: [
-            ContentTurn(role: "user", parts: [TextPart(text: "System: You are now active. Greet Papa and ask how you can help.")])
+            ContentTurn(role: "user", parts: [TextPart(text: "System: You are now active. Greet Papa.")])
         ], turnComplete: true))
         await sendEncoded(msg)
     }
 
     private func sendEncoded<T: Encodable>(_ value: T) async {
         let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.keyDecodingStrategy = .convertToSnakeCase
         if let data = try? encoder.encode(value), let str = String(data: data, encoding: .utf8) {
-            print("Friday sending: \(str)")
             try? await wsTask?.send(.string(str))
         }
     }
 
     nonisolated func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
-        print("Friday: WebSocket connected")
         Task { @MainActor in self.connectionContinuation?.resume() }
     }
 
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
-        if let error = error {
-            print("Friday: WebSocket task completed with error — \(error)")
-        }
         Task { @MainActor in 
-            FridayState.shared.isError = true
+            FridayState.shared.update(\.isError, to: true)
             self.isConnecting = false
         }
     }

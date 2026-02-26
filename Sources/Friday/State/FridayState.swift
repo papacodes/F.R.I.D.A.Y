@@ -10,4 +10,10 @@ final class FridayState: ObservableObject {
     @Published var isSpeaking = false
     @Published var isError = false
     @Published var transcript = ""
+
+    func update<T: Equatable>(_ keyPath: ReferenceWritableKeyPath<FridayState, T>, to value: T) {
+        if self[keyPath: keyPath] != value {
+            self[keyPath: keyPath] = value
+        }
+    }
 }
