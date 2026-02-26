@@ -96,8 +96,19 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                     inputAudioTranscription: nil,
                     outputAudioTranscription: nil
                 ),
-                systemInstruction: nil,
-                tools: nil
+                systemInstruction: SystemInstruction(parts: [TextPart(text: """
+                    You are Friday, Papa s macOS AI assistant. 
+                    Personality: Concise, skilled colleague, terse but competent.
+                    You live in the notch of his MacBook as a glowing floating orb.
+                    On startup: Greet Papa by name and mention today s date/time.
+                    Constraints: Keep responses under 3 sentences unless asked for detail.
+                    When Papa asks for weather, time, or dev tasks, use your tools.
+                    """)]),
+                tools: [ToolsList(functionDeclarations: [
+                    Self.devTaskTool,
+                    Self.weatherTool,
+                    Self.timeTool
+                ])]
             )
         )
         await sendEncoded(msg)
@@ -112,13 +123,10 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                     if let data = text.data(using: .utf8) { await handleServer(data) }
                 case .data(let data):
                     await handleServer(data)
-                @unknown default:
-                    break
+                @unknown default: break
                 }
             } catch {
-                if wsTask != nil {
-                    print("Friday: WebSocket receive error — \(error)")
-                }
+                if wsTask != nil { print("Friday: WebSocket receive error — \(error)") }
                 break
             }
         }
@@ -184,9 +192,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                     Task { await handleToolCall(call) }
                 }
             }
-        } catch {
-            // Ignore decoding noise
-        }
+        } catch { /* decoding noise */ }
     }
 
     private func setupOutputAudio() {
@@ -202,7 +208,6 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         guard frameCount > 0, let buffer = AVAudioPCMBuffer(pcmFormat: playbackFormat, frameCapacity: AVAudioFrameCount(frameCount)) else { return }
         buffer.frameLength = AVAudioFrameCount(frameCount)
         let floats = buffer.floatChannelData![0]
-        
         var sum: Float = 0
         data.withUnsafeBytes { raw in
             let int16s = raw.bindMemory(to: Int16.self)
@@ -212,20 +217,28 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 sum += s * s
             }
         }
-        
-        // Update volume from output
         let rms = sqrt(sum / Float(max(frameCount, 1)))
         state.update(\.volume, to: rms)
-        
         playerNode.scheduleBuffer(buffer)
     }
 
     private func handleToolCall(_ call: FunctionCall) async {
         state.update(\.isThinking, to: true)
         var result = "Task complete."
-        if call.name == "execute_dev_task", let prompt = call.args["prompt"] {
-            result = (try? await devBrain.ask(prompt)) ?? "Error running task."
+        
+        switch call.name {
+        case "execute_dev_task":
+            if let prompt = call.args["prompt"] {
+                result = (try? await devBrain.ask(prompt)) ?? "Error running task."
+            }
+        case "get_weather":
+            result = await WeatherSkill.fetchWeather()
+        case "get_time":
+            result = "It is currently \(TimeSkill.getCurrentTime()) on \(TimeSkill.getCurrentDate())."
+        default:
+            result = "Tool not found."
         }
+
         state.update(\.isThinking, to: false)
         let response = ToolResponseMessage(toolResponse: ToolResponseBody(functionResponses: [
             FunctionResponseItem(id: call.id, name: call.name, response: ["output": result])
@@ -267,5 +280,17 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             properties: ["prompt": ParamProperty(type: "STRING", description: "The task description")],
             required: ["prompt"]
         )
+    )
+
+    private static let weatherTool = FunctionDecl(
+        name: "get_weather",
+        description: "Get the current weather.",
+        parameters: FunctionParams(type: "object", properties: [:], required: [])
+    )
+
+    private static let timeTool = FunctionDecl(
+        name: "get_time",
+        description: "Get the current date and time.",
+        parameters: FunctionParams(type: "object", properties: [:], required: [])
     )
 }
