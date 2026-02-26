@@ -5,7 +5,7 @@ import SwiftUI
 class NotchWindowController {
     private let panel: NotchWindow
     private(set) var isExpanded = false
-    private var pipeline: VoicePipeline?
+    private var pipeline: GeminiVoicePipeline?
 
     private let panelHeight: CGFloat = 56
     private let menuBarGap: CGFloat  = 6   // breathing room below the menu bar
@@ -65,7 +65,7 @@ class NotchWindowController {
         }
 
         if pipeline == nil {
-            pipeline = VoicePipeline(state: FridayState.shared)
+            pipeline = GeminiVoicePipeline(state: FridayState.shared)
         }
         pipeline?.start()
     }
