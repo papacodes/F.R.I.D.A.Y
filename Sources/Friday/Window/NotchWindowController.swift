@@ -7,8 +7,9 @@ class NotchWindowController {
     private(set) var isExpanded = false
     private var pipeline: GeminiVoicePipeline?
 
-    private let panelHeight: CGFloat = 56
-    private let menuBarGap: CGFloat  = 6   // breathing room below the menu bar
+    private let expandedHeight: CGFloat = 350 // Much taller for card + orb
+    private let collapsedHeight: CGFloat = 32
+    private let topOffset: CGFloat = 1
 
     init() {
         panel = NotchWindow()
@@ -25,43 +26,40 @@ class NotchWindowController {
         isExpanded ? collapse() : expand()
     }
 
-    // MARK: - Expand / collapse
-
     func expand() {
         guard !isExpanded else { return }
         isExpanded = true
 
         let screen = NSScreen.main ?? NSScreen.screens[0]
         let (notchX, notchWidth) = notchGeometry(screen: screen)
-        let belowMenuBar = screen.visibleFrame.maxY   // bottom edge of menu bar
+        let topOfScreen = screen.frame.maxY + topOffset
 
-        // Where the panel lives when visible
+        // Ensure at least 320 width for the card
+        let finalWidth = max(notchWidth, 320)
+        let finalX = notchX - (finalWidth - notchWidth) / 2
+
         let targetFrame = NSRect(
-            x: notchX,
-            y: belowMenuBar - panelHeight - menuBarGap,
-            width: notchWidth,
-            height: panelHeight
+            x: finalX,
+            y: topOfScreen - expandedHeight,
+            width: finalWidth,
+            height: expandedHeight
         )
 
-        // Start hidden with its bottom flush against the menu bar bottom —
-        // looks like it slides out from inside the notch
         let startFrame = NSRect(
             x: notchX,
-            y: belowMenuBar,
+            y: topOfScreen - collapsedHeight,
             width: notchWidth,
-            height: panelHeight
+            height: collapsedHeight
         )
 
         panel.setFrame(startFrame, display: false)
-        panel.alphaValue = 0
+        panel.alphaValue = 1
         panel.orderFrontRegardless()
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.46
-            // Spring overshoot → subtle bounce at rest
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.34, 1.56, 0.64, 1.0)
+            context.duration = 0.5
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.15, 1.25, 0.45, 1.0)
             panel.animator().setFrame(targetFrame, display: true)
-            panel.animator().alphaValue = 1
         }
 
         if pipeline == nil {
@@ -75,33 +73,31 @@ class NotchWindowController {
         isExpanded = false
 
         pipeline?.stop()
+        FridayState.shared.showInfoCard = false // Reset card state on collapse
 
         let screen = NSScreen.main ?? NSScreen.screens[0]
         let (notchX, notchWidth) = notchGeometry(screen: screen)
-        let belowMenuBar = screen.visibleFrame.maxY
+        let topOfScreen = screen.frame.maxY + topOffset
 
-        // Retreat back up into the notch
         let collapseFrame = NSRect(
             x: notchX,
-            y: belowMenuBar,
+            y: topOfScreen - collapsedHeight,
             width: notchWidth,
-            height: panelHeight
+            height: collapsedHeight
         )
 
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.20
+            context.duration = 0.3
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             panel.animator().setFrame(collapseFrame, display: true)
-            panel.animator().alphaValue = 0
         }, completionHandler: {
-            Task { @MainActor in self.panel.orderOut(nil) }
+            Task { @MainActor in
+                self.panel.alphaValue = 0
+                self.panel.orderOut(nil)
+            }
         })
     }
 
-    // MARK: - Notch geometry
-
-    // Returns the x origin and width of the notch using the screen's auxiliary
-    // area rects (macOS 12+). Falls back to a centred pill on non-notch displays.
     private func notchGeometry(screen: NSScreen) -> (x: CGFloat, width: CGFloat) {
         if let left = screen.auxiliaryTopLeftArea,
            let right = screen.auxiliaryTopRightArea {
@@ -109,7 +105,11 @@ class NotchWindowController {
             let width = right.minX - left.maxX
             if width > 0 { return (x, width) }
         }
-        // Non-notch display — centred 200pt pill
-        return (screen.frame.midX - 100, 200)
+        return (screen.frame.midX - 150, 300)
     }
+}
+
+// Typo fix for timing function
+extension CAMediaTimingFunction {
+    static var standard: CAMediaTimingFunction { CAMediaTimingFunction(name: .default) }
 }

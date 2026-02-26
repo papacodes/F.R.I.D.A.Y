@@ -32,6 +32,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         state.update(\.isSpeaking, to: false)
         state.update(\.isListening, to: false)
         state.update(\.isError, to: false)
+        state.update(\.volume, to: 0.0)
         Task { await connect() }
     }
 
@@ -50,11 +51,12 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         state.update(\.isListening, to: false)
         state.update(\.isThinking, to: false)
         state.update(\.isSpeaking, to: false)
+        state.update(\.volume, to: 0.0)
     }
 
     private func connect() async {
         guard !isConnecting else { return }
-        guard let apiKey = ProcessInfo.processInfo.environment["GEMINI_API_KEY"], !apiKey.isEmpty else {
+        guard let apiKey = Config.shared.apiKey, !apiKey.isEmpty else {
             state.update(\.isError, to: true)
             return
         }
@@ -134,15 +136,18 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         do {
             let msg = try decoder.decode(ServerMessage.self, from: data)
             
-            if let err = msg.error {
-                print("Friday: Gemini API error — \(err.message ?? "no message")")
+            if msg.error != nil {
                 state.update(\.isError, to: true)
                 return
             }
 
             if msg.setupComplete != nil {
-                audioProcessor.start(ws: wsTask) { [weak self] active in
-                    DispatchQueue.main.async { self?.state.update(\.isListening, to: active) }
+                audioProcessor.start(ws: wsTask) { [weak self] active, rms in
+                    DispatchQueue.main.async { 
+                        self?.state.update(\.isListening, to: active)
+                        if active { self?.state.update(\.volume, to: rms) }
+                        else if self?.state.isSpeaking == false { self?.state.update(\.volume, to: 0.0) }
+                    }
                 }
                 audioProcessor.isMuted = false
                 await sendGreeting()
@@ -164,11 +169,13 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 if content.turnComplete == true { 
                     self.state.update(\.isSpeaking, to: false)
                     self.audioProcessor.isMuted = false 
+                    self.state.update(\.volume, to: 0.0)
                 }
                 if content.interrupted == true {
                     playerNode.stop(); playerNode.play()
                     state.update(\.isSpeaking, to: false)
                     audioProcessor.isMuted = false
+                    state.update(\.volume, to: 0.0)
                 }
             }
 
@@ -195,10 +202,21 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         guard frameCount > 0, let buffer = AVAudioPCMBuffer(pcmFormat: playbackFormat, frameCapacity: AVAudioFrameCount(frameCount)) else { return }
         buffer.frameLength = AVAudioFrameCount(frameCount)
         let floats = buffer.floatChannelData![0]
+        
+        var sum: Float = 0
         data.withUnsafeBytes { raw in
             let int16s = raw.bindMemory(to: Int16.self)
-            for i in 0..<frameCount { floats[i] = Float(int16s[i]) / 32768.0 }
+            for i in 0..<frameCount { 
+                let s = Float(int16s[i]) / 32768.0
+                floats[i] = s
+                sum += s * s
+            }
         }
+        
+        // Update volume from output
+        let rms = sqrt(sum / Float(max(frameCount, 1)))
+        state.update(\.volume, to: rms)
+        
         playerNode.scheduleBuffer(buffer)
     }
 
@@ -224,7 +242,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
     private func sendEncoded<T: Encodable>(_ value: T) async {
         let encoder = JSONEncoder()
-        encoder.keyDecodingStrategy = .convertToSnakeCase
+        encoder.keyEncodingStrategy = .convertToSnakeCase
         if let data = try? encoder.encode(value), let str = String(data: data, encoding: .utf8) {
             try? await wsTask?.send(.string(str))
         }

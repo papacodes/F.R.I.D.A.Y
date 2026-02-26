@@ -1,19 +1,34 @@
 @preconcurrency import AVFoundation
 import Foundation
 
-@MainActor
-final class AudioProcessor {
+final class AudioProcessor: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
     private var targetFormat: AVAudioFormat?
 
-    var isMuted = true
-    var wsTask: URLSessionWebSocketTask? = nil
-    var onActivity: ((Bool) -> Void)? = nil
+    private let stateLock = NSLock()
+    private var _isMuted = true
+    private var _wsTask: URLSessionWebSocketTask? = nil
+    private var _onActivity: (@Sendable (Bool, Float) -> Void)? = nil
+
+    var isMuted: Bool {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _isMuted }
+        set { stateLock.lock(); defer { stateLock.unlock() }; _isMuted = newValue }
+    }
+
+    var wsTask: URLSessionWebSocketTask? {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _wsTask }
+        set { stateLock.lock(); defer { stateLock.unlock() }; _wsTask = newValue }
+    }
+
+    var onActivity: (@Sendable (Bool, Float) -> Void)? {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _onActivity }
+        set { stateLock.lock(); defer { stateLock.unlock() }; _onActivity = newValue }
+    }
 
     private let processingQueue = DispatchQueue(label: "com.friday.audio.processing", qos: .userInitiated)
 
-    func start(ws: URLSessionWebSocketTask?, onActivity: @escaping (Bool) -> Void) {
+    func start(ws: URLSessionWebSocketTask?, onActivity: @escaping @Sendable (Bool, Float) -> Void) {
         self.wsTask = ws
         self.onActivity = onActivity
 
@@ -31,8 +46,9 @@ final class AudioProcessor {
         guard let target = targetFormat else { return }
         converter = AVAudioConverter(from: hwFormat, to: target)
 
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { [weak self] buffer, _ in
-            // Fast RMS calculation on the audio thread
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: hwFormat) { [weak self] buffer, _ in
+            guard let self = self else { return }
+            
             var rms: Float = 0
             if let ch = buffer.floatChannelData {
                 let n = Int(buffer.frameLength)
@@ -41,37 +57,34 @@ final class AudioProcessor {
                 rms = sqrt(sum / Float(max(n, 1)))
             }
 
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                let muted = self.isMuted
-                let isActive = rms > 0.01 && !muted
-                self.onActivity?(isActive)
+            let muted = self.isMuted
+            let isActive = rms > 0.01 && !muted
+            self.onActivity?(isActive, rms)
 
-                if muted { return }
+            if muted { return }
 
-                let currentWs = self.wsTask
-                let conv = self.converter
+            let ws = self.wsTask
+            let conv = self.converter
+            let target = self.targetFormat
 
-                // Offload heavy conversion and JSON work to a background queue
-                self.processingQueue.async { [weak self] in
-                    guard let conv = conv, let ws = currentWs, let target = self?.targetFormat else { return }
+            self.processingQueue.async {
+                guard let conv = conv, let ws = ws, let target = target else { return }
 
-                    let ratio = 16000.0 / hwFormat.sampleRate
-                    let outFrames = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
-                    guard outFrames > 0, let outBuf = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: outFrames) else { return }
+                let ratio = 16000.0 / hwFormat.sampleRate
+                let outFrames = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
+                guard outFrames > 0, let outBuf = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: outFrames) else { return }
 
-                    var error: NSError?
-                    let status = conv.convert(to: outBuf, error: &error) { _, outStatus in
-                        outStatus.pointee = .haveData
-                        return buffer
-                    }
+                var error: NSError?
+                let status = conv.convert(to: outBuf, error: &error) { _, outStatus in
+                    outStatus.pointee = .haveData
+                    return buffer
+                }
 
-                    if status == .haveData, outBuf.frameLength > 0, let int16Data = outBuf.int16ChannelData {
-                        let pcmData = Data(bytes: int16Data[0], count: Int(outBuf.frameLength) * 2)
-                        let b64 = pcmData.base64EncodedString()
-                        let msg = #"{"realtime_input":{"media_chunks":[{"mime_type":"audio/pcm;rate=16000","data":""# + b64 + #""}]}}"#
-                        ws.send(.string(msg)) { _ in }
-                    }
+                if status == .haveData, outBuf.frameLength > 0, let int16Data = outBuf.int16ChannelData {
+                    let pcmData = Data(bytes: int16Data[0], count: Int(outBuf.frameLength) * 2)
+                    let b64 = pcmData.base64EncodedString()
+                    let msg = #"{"realtime_input":{"media_chunks":[{"mime_type":"audio/pcm;rate=16000","data":""# + b64 + #""}]}}"#
+                    ws.send(.string(msg)) { _ in }
                 }
             }
         }

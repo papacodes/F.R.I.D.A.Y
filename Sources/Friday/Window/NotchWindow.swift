@@ -9,7 +9,7 @@ class NotchWindow: NSPanel {
         defer flag: Bool
     ) {
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 200, height: 56),
+            contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -18,19 +18,18 @@ class NotchWindow: NSPanel {
     }
 
     private func configure() {
-        // Clear background — SwiftUI draws the pill shape and handles corner rounding
         backgroundColor = .clear
         isOpaque = false
         hasShadow = false
 
-        // Float above normal windows but below menus/overlays
-        level = .floating
+        // Float above EVERYTHING
+        level = .statusBar
 
         isFloatingPanel = true
         worksWhenModal = true
         hidesOnDeactivate = false
         becomesKeyOnlyIfNeeded = true
-        collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
 
         contentView?.wantsLayer = true
     }

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 @MainActor
 final class FridayState: ObservableObject {
@@ -10,6 +11,11 @@ final class FridayState: ObservableObject {
     @Published var isSpeaking = false
     @Published var isError = false
     @Published var transcript = ""
+    @Published var volume: Float = 0.0
+    
+    // Interactive Card State
+    @Published var showInfoCard = false
+    @Published var modelName = "Gemini 2.5 Flash"
 
     func update<T: Equatable>(_ keyPath: ReferenceWritableKeyPath<FridayState, T>, to value: T) {
         if self[keyPath: keyPath] != value {
