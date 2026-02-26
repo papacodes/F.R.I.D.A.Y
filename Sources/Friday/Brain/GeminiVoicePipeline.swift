@@ -100,7 +100,6 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                     You are Friday, Papa s macOS AI assistant. 
                     Personality: Concise, skilled colleague, terse but competent.
                     You live in the notch of his MacBook as a glowing floating orb.
-                    On startup: Greet Papa by name and mention today s date/time.
                     Constraints: Keep responses under 3 sentences unless asked for detail.
                     When Papa asks for weather, time, or dev tasks, use your tools.
                     """)]),
@@ -247,8 +246,21 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func sendGreeting() async {
+        let prompt: String
+        if !state.hasGreetedThisSession {
+            let time = TimeSkill.getCurrentTime()
+            let date = TimeSkill.getCurrentDate()
+            let loc = await LocationSkill.fetchLocation()
+            let city = loc?.city ?? "your current location"
+            
+            prompt = "System: First summon of the session. Greet Papa by name. Today is \(date) and the current time is \(time). You are currently in \(city). Mention these naturally."
+            state.update(\.hasGreetedThisSession, to: true)
+        } else {
+            prompt = "System: Subsequent summon. Give a very short, natural, and varied greeting (e.g., What s up, Back again, or similar). Stay in character as Friday."
+        }
+
         let msg = ClientContentMessage(clientContent: ClientContent(turns: [
-            ContentTurn(role: "user", parts: [TextPart(text: "System: You are now active. Greet Papa.")])
+            ContentTurn(role: "user", parts: [TextPart(text: prompt)])
         ], turnComplete: true))
         await sendEncoded(msg)
     }

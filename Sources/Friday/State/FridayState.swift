@@ -13,9 +13,11 @@ final class FridayState: ObservableObject {
     @Published var transcript = ""
     @Published var volume: Float = 0.0
     
-    // Interactive Card State
     @Published var showInfoCard = false
     @Published var modelName = "Gemini 2.5 Flash"
+    
+    // Tracking session greetings
+    @Published var hasGreetedThisSession = false
 
     func update<T: Equatable>(_ keyPath: ReferenceWritableKeyPath<FridayState, T>, to value: T) {
         if self[keyPath: keyPath] != value {
