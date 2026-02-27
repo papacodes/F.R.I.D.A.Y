@@ -1,27 +1,21 @@
 import SwiftUI
 
-/// Music-tab: Mimics the Hero structure of Home but with the player as the focus.
 struct MusicTabView: View {
     @ObservedObject private var state = FridayState.shared
+    var namespace: Namespace.ID
 
     var body: some View {
         VStack(spacing: 0) {
-            // HERO AREA: Full Player
-            ZStack {
-                if let art = state.albumArt {
-                    Image(nsImage: art)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(height: 160)
-                        .blur(radius: 40)
-                        .opacity(0.3)
-                        .clipped()
-                }
+            // Player Stage
+            HStack(spacing: 24) {
+                // Symmetrical, centered music view
+                AlbumArtView(size: 80, cornerRadius: 14, showBackdrop: false)
+                    .matchedGeometryEffect(id: "music_art", in: namespace)
+                    .shadow(color: .black.opacity(0.4), radius: 10, y: 5)
                 
-                HStack(spacing: 20) {
-                    AlbumArtView(size: 80, cornerRadius: 12, showBackdrop: false)
-                    
-                    VStack(alignment: .leading, spacing: 2) {
+                // Track Info & Controls
+                VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 0) {
                         MarqueeText(
                             text: state.nowPlayingTitle.isEmpty ? "NOTHING PLAYING" : state.nowPlayingTitle.uppercased(),
                             font: .system(size: 13, weight: .black, design: .rounded),
@@ -30,60 +24,42 @@ struct MusicTabView: View {
                         .frame(height: 18)
                         
                         Text(state.nowPlayingArtist.isEmpty ? "Idle" : state.nowPlayingArtist)
-                            .font(.system(size: 11, weight: .bold, design: .rounded))
-                            .foregroundColor(.white.opacity(0.5))
-                        
-                        MusicProgressSlider()
-                            .padding(.top, 4)
-                        
-                        MusicControlsView()
-                            .scaleEffect(0.8)
-                            .padding(.top, 2)
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .foregroundColor(.white.opacity(0.4))
+                            .lineLimit(1)
                     }
-                }
-                .padding(.horizontal, 24)
-            }
-            .frame(height: 160)
-            .background(Color.white.opacity(0.03))
-            .cornerRadius(20)
-            .padding(.top, 10)
-
-            Spacer()
-
-            // BOTTOM ROW: Persistent System Pill for balance
-            HStack {
-                Spacer()
-                MiniSystemPill() // Re-using local version or proxy
-            }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
-        }
-    }
-}
-
-// Small Proxy for symmetry
-private struct MiniSystemPill: View {
-    var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .trailing, spacing: 0) {
-                Text(Date(), format: .dateTime.hour().minute())
-                    .font(.system(size: 16, weight: .black, design: .rounded))
+                    
+                    // Core Controls
+                    HStack(spacing: 24) {
+                        Button(action: { /* Previous */ }) {
+                            Image(systemName: "backward.fill")
+                                .font(.system(size: 12))
+                        }
+                        
+                        Button(action: { state.isPlayingMusic.toggle() }) {
+                            Image(systemName: state.isPlayingMusic ? "pause.fill" : "play.fill")
+                                .font(.system(size: 18))
+                        }
+                        
+                        Button(action: { /* Next */ }) {
+                            Image(systemName: "forward.fill")
+                                .font(.system(size: 12))
+                        }
+                    }
                     .foregroundColor(.white)
-                    .monospacedDigit()
-                
-                Text(Date(), format: .dateTime.weekday(.wide).day())
-                    .font(.system(size: 8, weight: .bold, design: .rounded))
-                    .foregroundColor(.white.opacity(0.35))
-                    .textCase(.uppercase)
-                    .tracking(0.5)
+                    .buttonStyle(.plain)
+                    .padding(.top, 8)
+                }
+                .frame(width: 180, alignment: .leading)
+                .matchedGeometryEffect(id: "music_info", in: namespace)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .frame(height: 140)
         .background(
-            Capsule()
-                .fill(Color.white.opacity(0.045))
-                .overlay(Capsule().stroke(Color.white.opacity(0.06), lineWidth: 0.5))
+            Color.white.opacity(0.01)
+                .cornerRadius(20)
+                .matchedGeometryEffect(id: "music_bg", in: namespace)
         )
+        .padding(.horizontal, 40)
     }
 }
