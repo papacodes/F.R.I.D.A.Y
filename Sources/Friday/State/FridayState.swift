@@ -13,6 +13,40 @@ enum NotchDisplayState: Equatable {
     case open        // Full vertical expansion — interactive UI
 }
 
+// MARK: - Activity Item
+
+struct ActivityItem: Identifiable, Equatable {
+    let id = UUID()
+    let type: ActivityType
+    let title: String
+    let subtitle: String?
+    let timestamp = Date()
+
+    enum ActivityType {
+        case toolCall, done, info, warning, error
+
+        var icon: String {
+            switch self {
+            case .toolCall: return "hammer.fill"
+            case .done:     return "checkmark.circle.fill"
+            case .info:     return "info.circle.fill"
+            case .warning:  return "exclamationmark.triangle.fill"
+            case .error:    return "xmark.octagon.fill"
+            }
+        }
+
+        var color: Color {
+            switch self {
+            case .toolCall: return .blue
+            case .done:     return .green
+            case .info:     return .cyan
+            case .warning:  return .orange
+            case .error:    return .red
+            }
+        }
+    }
+}
+
 // MARK: - Tab navigation
 
 enum NotchTab: CaseIterable, Identifiable {
@@ -58,6 +92,7 @@ final class FridayState: ObservableObject {
     @Published var modelName    = "Gemini 2.5 Flash"
     @Published var hasGreetedThisSession = false
     @Published var lastActivityTime = Date()
+    @Published var activityFeed: [ActivityItem] = []
 
     // MARK: Window
     @Published var displayState: NotchDisplayState = .dismissed
@@ -90,4 +125,12 @@ final class FridayState: ObservableObject {
     }
 
     func recordActivity() { lastActivityTime = Date() }
+    
+    func addActivity(type: ActivityItem.ActivityType, title: String, subtitle: String? = nil) {
+        let item = ActivityItem(type: type, title: title, subtitle: subtitle)
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+            activityFeed.insert(item, at: 0)
+            if activityFeed.count > 10 { activityFeed.removeLast() }
+        }
+    }
 }

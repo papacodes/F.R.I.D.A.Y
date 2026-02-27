@@ -5,62 +5,74 @@ struct SiriOrbView: View {
     let isThinking: Bool
 
     @State private var rotation: Double = 0
+    @State private var pulse: CGFloat = 1.0
 
     var body: some View {
         ZStack {
-            // Background Shadow/Glow for Circular Definition
+            // Background blur/glow
             Circle()
-                .fill(Color.black.opacity(0.4))
-                .frame(width: 80, height: 80)
-                .blur(radius: 15)
-                .scaleEffect(1.0 + CGFloat(volume) * 0.5)
+                .fill(Color.cyan.opacity(0.1))
+                .frame(width: 90, height: 90)
+                .blur(radius: 20)
 
-            // Layer 1: Core glow
-            Circle()
-                .fill(RadialGradient(
-                    gradient: Gradient(colors: [Color(red: 0, green: 0.8, blue: 1), Color.blue.opacity(0)]),
-                    center: .center,
-                    startRadius: 0,
-                    endRadius: 40
-                ))
-                .frame(width: 80, height: 80)
-                .scaleEffect(1.0 + CGFloat(volume) * 2.5)
-                .blur(radius: 8)
-
-            // Layer 2: Secondary purple glow
-            Circle()
-                .fill(RadialGradient(
-                    gradient: Gradient(colors: [Color.purple, Color.purple.opacity(0)]),
-                    center: .center,
-                    startRadius: 0,
-                    endRadius: 35
-                ))
-                .frame(width: 70, height: 70)
-                .offset(x: isThinking ? 10 : 0)
-                .rotationEffect(.degrees(rotation))
-                .scaleEffect(1.1 + CGFloat(volume) * 1.5)
-                .blur(radius: 12)
-
-            // Layer 3: Accent cyan
-            Circle()
-                .fill(RadialGradient(
-                    gradient: Gradient(colors: [Color.cyan, Color.cyan.opacity(0)]),
-                    center: .center,
-                    startRadius: 0,
-                    endRadius: 30
-                ))
-                .frame(width: 60, height: 60)
-                .offset(x: isThinking ? -10 : 0)
-                .rotationEffect(.degrees(-rotation))
-                .scaleEffect(1.0 + CGFloat(volume) * 3.0)
-                .blur(radius: 10)
+            // Dynamic Blobs
+            ZStack {
+                // Layer 1: Deep Blue (Core)
+                orbBlob(color: Color(red: 0, green: 0.4, blue: 1), 
+                        scale: 1.2 + CGFloat(volume) * 1.5, 
+                        offset: isThinking ? 5 : 0, 
+                        rotation: rotation)
+                
+                // Layer 2: Cyan (Highlight)
+                orbBlob(color: .cyan, 
+                        scale: 1.0 + CGFloat(volume) * 2.5, 
+                        offset: isThinking ? -8 : 0, 
+                        rotation: -rotation * 1.2)
+                
+                // Layer 3: Purple (Accent)
+                orbBlob(color: .purple, 
+                        scale: 1.1 + CGFloat(volume) * 1.8, 
+                        offset: isThinking ? 10 : 2, 
+                        rotation: rotation * 0.7)
+                
+                // Layer 4: White (Center Shine)
+                Circle()
+                    .fill(RadialGradient(
+                        gradient: Gradient(colors: [.white.opacity(0.5), .white.opacity(0)]),
+                        center: .center,
+                        startRadius: 0,
+                        endRadius: 20
+                    ))
+                    .frame(width: 40, height: 40)
+                    .scaleEffect(0.8 + CGFloat(volume) * 1.2)
+                    .blur(radius: 4)
+            }
+            .blendMode(.screen)
         }
-        .opacity(0.9)
-        .blendMode(.screen)
+        .frame(width: 100, height: 100)
         .onAppear {
-            withAnimation(.linear(duration: 4).repeatForever(autoreverses: false)) {
+            withAnimation(.linear(duration: 5).repeatForever(autoreverses: false)) {
                 rotation = 360
             }
+            withAnimation(.easeInOut(duration: 2).repeatForever(autoreverses: true)) {
+                pulse = 1.1
+            }
         }
+    }
+
+    @ViewBuilder
+    private func orbBlob(color: Color, scale: CGFloat, offset: CGFloat, rotation: Double) -> some View {
+        Circle()
+            .fill(RadialGradient(
+                gradient: Gradient(colors: [color.opacity(0.7), color.opacity(0)]),
+                center: .center,
+                startRadius: 0,
+                endRadius: 40
+            ))
+            .frame(width: 80, height: 80)
+            .offset(x: offset, y: isThinking ? offset : 0)
+            .rotationEffect(.degrees(rotation))
+            .scaleEffect(scale * pulse)
+            .blur(radius: 10)
     }
 }

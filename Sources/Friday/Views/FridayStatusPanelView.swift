@@ -4,30 +4,35 @@ struct FridayStatusPanelView: View {
     @ObservedObject private var state = FridayState.shared
 
     var body: some View {
-        VStack(spacing: 10) {
-            // Orb
+        VStack(spacing: 12) {
+            // Orb — Focused and Liquid
             SiriOrbView(volume: state.volume, isThinking: state.isThinking)
-                .scaleEffect(0.55)
-                .frame(width: 60, height: 60)
+                .frame(width: 80, height: 80)
+                .scaleEffect(1.4)
+                .shadow(color: statusColor.opacity(0.3), radius: 20)
 
-            // Status label
-            Text(statusText)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(statusColor)
-                .animation(.easeInOut(duration: 0.2), value: statusText)
+            // Status label — Pure White, Rounded, Strong Tracking
+            Text(statusText.uppercased())
+                .font(.system(size: 11, weight: .black, design: .rounded))
+                .foregroundColor(.white) // Pure White
+                .tracking(1.5)
+                .shadow(color: .black.opacity(0.5), radius: 2)
+                .padding(.top, 4)
 
-            // Transcript
+            // Transcript — Pure White but translucent for clarity, beautiful typeset
             if !state.transcript.isEmpty {
                 Text("\u{201C}\(state.transcript)\u{201D}")
-                    .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.45))
-                    .lineLimit(2)
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .foregroundColor(.white.opacity(0.85)) // Pure White but readable
                     .multilineTextAlignment(.center)
-                    .padding(.horizontal, 8)
-                    .transition(.opacity)
+                    .lineLimit(2)
+                    .padding(.horizontal, 24)
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                    .shadow(color: .black.opacity(0.3), radius: 4)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity)
+        .animation(.spring(response: 0.35, dampingFraction: 0.8), value: statusText)
     }
 
     private var statusText: String {
@@ -40,9 +45,9 @@ struct FridayStatusPanelView: View {
 
     private var statusColor: Color {
         if state.isListening { return .cyan }
-        if state.isThinking  { return .white.opacity(0.7) }
+        if state.isThinking  { return .purple }
         if state.isSpeaking  { return .cyan }
-        if state.isError     { return .red.opacity(0.8) }
-        return .white.opacity(0.35)
+        if state.isError     { return .red }
+        return .white.opacity(0.1)
     }
 }

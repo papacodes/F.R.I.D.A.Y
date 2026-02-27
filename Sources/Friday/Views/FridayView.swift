@@ -4,14 +4,14 @@ import SwiftUI
 
 enum NotchSizes {
     static let standardWidth: CGFloat = 440   // horizontal bar width
-    static let openWidth:     CGFloat = 640   // full expanded width
-    static let openHeight:    CGFloat = 260   // full expanded height
+    static let openWidth:     CGFloat = 660   // slightly wider for a more premium spread
+    static let openHeight:    CGFloat = 280   // slightly taller for better breathing room
 }
 
 struct FridayView: View {
     @ObservedObject private var state = FridayState.shared
 
-    private let spring = Animation.interactiveSpring(response: 0.38, dampingFraction: 0.82)
+    private let spring = Animation.interactiveSpring(response: 0.42, dampingFraction: 0.85)
 
     // MARK: - Computed shape dimensions
 
@@ -25,18 +25,18 @@ struct FridayView: View {
     }
 
     private var topCornerRadius: CGFloat {
-        state.displayState == .open ? 19 : 6
+        state.displayState == .open ? 18 : 6
     }
 
     private var bottomCornerRadius: CGFloat {
-        state.displayState == .open ? 24 : 14
+        state.displayState == .open ? 32 : 14
     }
 
     // MARK: - Body
 
     var body: some View {
         ZStack(alignment: .top) {
-            // Black notch shape — animates between all three sizes
+            // Pitch Black Background — Essential for blending with the notch
             Color.black
                 .frame(width: notchSize.width, height: notchSize.height)
                 .clipShape(
@@ -45,6 +45,15 @@ struct FridayView: View {
                         bottomCornerRadius: bottomCornerRadius
                     )
                 )
+                // Subtle outline to separate it slightly from the screen
+                .overlay(
+                    NotchShape(
+                        topCornerRadius: topCornerRadius,
+                        bottomCornerRadius: bottomCornerRadius
+                    )
+                    .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+                )
+                .shadow(color: .black.opacity(state.displayState == .dismissed ? 0 : 0.6), radius: 40, x: 0, y: 20)
                 .animation(spring, value: state.displayState)
 
             // Content — cross-fades between states

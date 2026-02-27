@@ -19,9 +19,9 @@ struct HorizontalNotchView: View {
             divider
 
             rightSection
-                .frame(width: 60)
+                .frame(width: 64)
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -31,7 +31,7 @@ struct HorizontalNotchView: View {
     private var leftSection: some View {
         if state.hasMusicTrack && !state.isActive {
             AlbumArtThumbnail(size: 20)
-                .transition(.opacity)
+                .transition(.opacity.combined(with: .scale))
         } else {
             MiniOrbView(isActive: state.isActive)
         }
@@ -41,59 +41,82 @@ struct HorizontalNotchView: View {
 
     @ViewBuilder
     private var centerSection: some View {
-        if state.isActive {
-            HStack(spacing: 8) {
-                MiniWaveform(isActive: true, color: .cyan)
-                    .frame(width: 40, height: 14)
-
-                Text(activeLabel)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.white.opacity(0.85))
-                    .lineLimit(1)
-
-                if !state.transcript.isEmpty {
-                    Text("· \(state.transcript)")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.4))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-            }
-        } else if state.hasMusicTrack {
-            HStack(spacing: 8) {
-                if state.isPlayingMusic {
-                    MiniWaveform(isActive: true, color: state.albumAccentColor)
-                        .frame(width: 28, height: 14)
-                } else {
-                    Image(systemName: "pause.fill")
-                        .font(.system(size: 9))
-                        .foregroundColor(.white.opacity(0.3))
-                }
-
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(state.nowPlayingTitle)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-                    Text(state.nowPlayingArtist)
-                        .font(.system(size: 10))
-                        .foregroundColor(state.albumAccentColor.opacity(0.75))
-                        .lineLimit(1)
-                }
-            }
-        } else {
-            HStack(spacing: 6) {
-                Text("F·R·I·D·A·Y")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.3))
-                    .tracking(2)
-                Text("·")
-                    .foregroundColor(.white.opacity(0.15))
-                Text("Ready")
-                    .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.2))
+        HStack(spacing: 10) {
+            if state.isActive {
+                activeContent
+            } else if state.hasMusicTrack {
+                musicContent
+            } else {
+                idleContent
             }
         }
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: state.isActive)
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: state.hasMusicTrack)
+    }
+
+    private var activeContent: some View {
+        HStack(spacing: 8) {
+            MiniWaveform(isActive: true, color: .cyan)
+                .frame(width: 36, height: 14)
+
+            Text(activeLabel.uppercased())
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundColor(.white.opacity(0.9))
+                .tracking(0.5)
+
+            if !state.transcript.isEmpty {
+                Text(state.transcript)
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .foregroundColor(.white.opacity(0.45))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+        .transition(.opacity.combined(with: .move(edge: .leading)))
+    }
+
+    private var musicContent: some View {
+        HStack(spacing: 10) {
+            if state.isPlayingMusic {
+                MiniWaveform(isActive: true, color: state.albumAccentColor)
+                    .frame(width: 24, height: 12)
+            } else {
+                Image(systemName: "pause.fill")
+                    .font(.system(size: 9))
+                    .foregroundColor(.white.opacity(0.4))
+            }
+
+            VStack(alignment: .leading, spacing: 0) {
+                Text(state.nowPlayingTitle)
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                Text(state.nowPlayingArtist)
+                    .font(.system(size: 9, weight: .medium, design: .rounded))
+                    .foregroundColor(state.albumAccentColor.opacity(0.85))
+                    .lineLimit(1)
+            }
+        }
+        .transition(.opacity.combined(with: .move(edge: .trailing)))
+    }
+
+    private var idleContent: some View {
+        HStack(spacing: 8) {
+            Text("F·R·I·D·A·Y")
+                .font(.system(size: 10, weight: .black, design: .rounded))
+                .foregroundColor(.white.opacity(0.25))
+                .tracking(1.5)
+            
+            Circle()
+                .fill(Color.white.opacity(0.1))
+                .frame(width: 3, height: 3)
+
+            Text("READY")
+                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .foregroundColor(.white.opacity(0.15))
+                .tracking(1.0)
+        }
+        .transition(.opacity)
     }
 
     // MARK: - Right: compact clock
@@ -101,8 +124,8 @@ struct HorizontalNotchView: View {
     private var rightSection: some View {
         TimelineView(.animation(minimumInterval: 30)) { _ in
             Text(Date(), format: .dateTime.hour().minute())
-                .font(.system(size: 12, weight: .light, design: .rounded))
-                .foregroundColor(.white.opacity(0.45))
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundColor(.white.opacity(0.5))
                 .monospacedDigit()
         }
     }
@@ -118,13 +141,13 @@ struct HorizontalNotchView: View {
 
     private var divider: some View {
         Rectangle()
-            .fill(Color.white.opacity(0.07))
-            .frame(width: 1, height: 16)
-            .padding(.horizontal, 10)
+            .fill(Color.white.opacity(0.12))
+            .frame(width: 0.5, height: 14)
+            .padding(.horizontal, 8)
     }
 }
 
-// MARK: - Mini orb
+// MARK: - Mini orb (revamped for Liquid style)
 
 private struct MiniOrbView: View {
     let isActive: Bool
@@ -132,30 +155,27 @@ private struct MiniOrbView: View {
 
     var body: some View {
         ZStack {
+            // Background glow
             Circle()
-                .fill(
-                    RadialGradient(
-                        colors: [.cyan.opacity(isActive ? 0.9 : 0.4), .clear],
-                        center: .center, startRadius: 0, endRadius: 11
-                    )
-                )
-                .frame(width: 22, height: 22)
-                .blur(radius: 2)
+                .fill(Color.cyan.opacity(isActive ? 0.3 : 0.1))
+                .frame(width: 24, height: 24)
+                .blur(radius: 4)
 
-            Circle()
-                .fill(
-                    RadialGradient(
-                        colors: [.purple.opacity(0.6), .clear],
-                        center: .center, startRadius: 0, endRadius: 8
-                    )
-                )
-                .frame(width: 16, height: 16)
-                .rotationEffect(.degrees(rotation))
-                .blur(radius: 3)
+            // Core
+            ZStack {
+                Circle()
+                    .fill(RadialGradient(colors: [.cyan.opacity(0.8), .clear], center: .center, startRadius: 0, endRadius: 10))
+                
+                Circle()
+                    .fill(RadialGradient(colors: [.purple.opacity(0.6), .clear], center: .center, startRadius: 0, endRadius: 8))
+                    .offset(x: isActive ? 4 : 0)
+                    .rotationEffect(.degrees(rotation))
+            }
+            .frame(width: 18, height: 18)
+            .blendMode(.screen)
         }
-        .blendMode(.screen)
-        .scaleEffect(isActive ? 1.15 : 0.85)
-        .animation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true), value: isActive)
+        .scaleEffect(isActive ? 1.1 : 0.9)
+        .animation(.spring(response: 0.4, dampingFraction: 0.7), value: isActive)
         .onAppear {
             withAnimation(.linear(duration: 4).repeatForever(autoreverses: false)) {
                 rotation = 360
