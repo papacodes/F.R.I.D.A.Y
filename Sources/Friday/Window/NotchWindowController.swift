@@ -4,102 +4,71 @@ import SwiftUI
 @MainActor
 final class NotchWindowController {
     private let panel: NotchWindow
-    private(set) var isExpanded = false
+    // Holds the CGS Space at absolute level Int.max — the mechanism that lets us
+    // render above the menu bar / notch constraint (same technique as boring.notch)
+    private let notchSpace = CGSSpace(level: 2147483647)
 
-    private let expandedHeight: CGFloat = 350
-    private let collapsedHeight: CGFloat = 32
-    private let topOffset: CGFloat = 1
+    // Fixed window dimensions — large enough for expanded content.
+    // The NSWindow never moves or resizes. SwiftUI animates what's visible inside it.
+    private let windowWidth: CGFloat = 640
+    private let windowHeight: CGFloat = 320
 
     init() {
         panel = NotchWindow()
+        panel.contentView = NSHostingView(rootView: FridayView())
 
-        let hostingView = NSHostingView(rootView: FridayView())
-        hostingView.frame = panel.contentView?.bounds ?? .zero
-        hostingView.autoresizingMask = [.width, .height]
-        panel.contentView = hostingView
+        let screen = NSScreen.main ?? NSScreen.screens[0]
 
-        panel.alphaValue = 0
+        let closedSize = notchClosedSize(screen: screen)
+        FridayState.shared.closedNotchSize = closedSize
+
+        let origin = NSPoint(
+            x: screen.frame.midX - windowWidth / 2,
+            y: screen.frame.maxY - windowHeight
+        )
+        let targetFrame = NSRect(origin: origin, size: CGSize(width: windowWidth, height: windowHeight))
+        panel.setFrame(targetFrame, display: false)
+
+        panel.ignoresMouseEvents = true
+        panel.orderFrontRegardless()
+        notchSpace.windows.insert(panel)
     }
 
     func toggle() {
-        isExpanded ? collapse() : expand()
+        FridayState.shared.isExpanded ? collapse() : expand()
     }
 
     func expand() {
-        guard !isExpanded else { return }
-        isExpanded = true
-
-        let screen = NSScreen.main ?? NSScreen.screens[0]
-        let (notchX, notchWidth) = notchGeometry(screen: screen)
-        let topOfScreen = screen.frame.maxY + topOffset
-
-        let finalWidth = max(notchWidth, 320)
-        let finalX = notchX - (finalWidth - notchWidth) / 2
-
-        let targetFrame = NSRect(
-            x: finalX,
-            y: topOfScreen - expandedHeight,
-            width: finalWidth,
-            height: expandedHeight
-        )
-
-        let startFrame = NSRect(
-            x: notchX,
-            y: topOfScreen - collapsedHeight,
-            width: notchWidth,
-            height: collapsedHeight
-        )
-
-        panel.setFrame(startFrame, display: false)
-        panel.alphaValue = 1
-        panel.orderFrontRegardless()
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.5
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.15, 1.25, 0.45, 1.0)
-            panel.animator().setFrame(targetFrame, display: true)
-        }
-
+        guard !FridayState.shared.isExpanded else { return }
+        panel.ignoresMouseEvents = false
+        FridayState.shared.isExpanded = true
         Task { await AppDelegate.pipeline.wake() }
     }
 
     func collapse() {
-        guard isExpanded else { return }
-        isExpanded = false
-
+        guard FridayState.shared.isExpanded else { return }
+        FridayState.shared.isExpanded = false
         FridayState.shared.showInfoCard = false
+        panel.ignoresMouseEvents = true
         Task { await AppDelegate.pipeline.sleep() }
-
-        let screen = NSScreen.main ?? NSScreen.screens[0]
-        let (notchX, notchWidth) = notchGeometry(screen: screen)
-        let topOfScreen = screen.frame.maxY + topOffset
-
-        let collapseFrame = NSRect(
-            x: notchX,
-            y: topOfScreen - collapsedHeight,
-            width: notchWidth,
-            height: collapsedHeight
-        )
-
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.3
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            panel.animator().setFrame(collapseFrame, display: true)
-        }, completionHandler: {
-            Task { @MainActor in
-                self.panel.alphaValue = 0
-                self.panel.orderOut(nil)
-            }
-        })
     }
 
-    private func notchGeometry(screen: NSScreen) -> (x: CGFloat, width: CGFloat) {
+    // MARK: - Private
+
+    private func notchClosedSize(screen: NSScreen) -> CGSize {
+        var width: CGFloat = 200
+        var height: CGFloat = 32
+
         if let left = screen.auxiliaryTopLeftArea,
            let right = screen.auxiliaryTopRightArea {
-            let x     = left.maxX
-            let width = right.minX - left.maxX
-            if width > 0 { return (x, width) }
+            let w = right.minX - left.maxX
+            if w > 0 { width = w }
         }
-        return (screen.frame.midX - 150, 300)
+
+        if screen.safeAreaInsets.top > 0 {
+            height = screen.safeAreaInsets.top
+        }
+
+        return CGSize(width: width, height: height)
     }
 }

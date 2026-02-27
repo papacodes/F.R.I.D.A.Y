@@ -17,6 +17,8 @@ final class FridayState: ObservableObject {
     @Published var transcript = ""
     @Published var volume: Float = 0.0
     
+    @Published var isExpanded = false
+    @Published var closedNotchSize: CGSize = CGSize(width: 200, height: 32)
     @Published var showInfoCard = false
     @Published var modelName = "Gemini 2.5 Flash"
     @Published var hasGreetedThisSession = false
