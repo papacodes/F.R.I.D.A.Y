@@ -6,7 +6,7 @@ struct FridayStatusPanelView: View {
     var body: some View {
         VStack(spacing: 20) { // Increased spacing
             // Orb — Focused and Liquid
-            SiriOrbView(volume: state.volume, isThinking: state.isThinking, isError: state.isError, isDevTask: state.isDevTaskRunning)
+            SiriOrbView(volume: state.volume, isThinking: state.isThinking, isError: state.isError, isDevTask: state.isDevTaskRunning, isConnected: state.isConnected)
                 .frame(width: 80, height: 80)
                 .scaleEffect(1.4)
                 .shadow(color: statusColor.opacity(0.3), radius: 20)

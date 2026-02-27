@@ -5,6 +5,7 @@ struct SiriOrbView: View {
     let isThinking: Bool
     let isError: Bool
     let isDevTask: Bool
+    let isConnected: Bool
 
     @State private var rotation: Double = 0
     @State private var pulse: CGFloat = 1.0
@@ -13,7 +14,7 @@ struct SiriOrbView: View {
         ZStack {
             // Background blur/glow
             Circle()
-                .fill(glowColor.opacity(0.15))
+                .fill(glowColor.opacity(isConnected ? 0.15 : 0.05))
                 .frame(width: 90, height: 90)
                 .blur(radius: 20)
 
@@ -40,7 +41,7 @@ struct SiriOrbView: View {
                 // Layer 4: White (Center Shine)
                 Circle()
                     .fill(RadialGradient(
-                        gradient: Gradient(colors: [.white.opacity(0.5), .white.opacity(0)]),
+                        gradient: Gradient(colors: [.white.opacity(isConnected ? 0.5 : 0.2), .white.opacity(0)]),
                         center: .center,
                         startRadius: 0,
                         endRadius: 20
@@ -52,6 +53,8 @@ struct SiriOrbView: View {
             .blendMode(.screen)
         }
         .frame(width: 100, height: 100)
+        .saturation(isConnected ? 1.0 : 0.0)
+        .opacity(isConnected ? 1.0 : 0.5)
         .onAppear {
             withAnimation(.linear(duration: 5).repeatForever(autoreverses: false)) {
                 rotation = 360

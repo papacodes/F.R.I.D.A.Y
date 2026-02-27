@@ -22,8 +22,6 @@ class NotchWindow: NSPanel {
         isOpaque = false
         hasShadow = false
 
-        // isFloatingPanel must come first — it resets level to .floating (3)
-        // Setting level afterwards ensures it sticks at mainMenu+3 (27)
         isFloatingPanel = true
         level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 3)
         isReleasedWhenClosed = false
@@ -36,19 +34,52 @@ class NotchWindow: NSPanel {
         titlebarAppearsTransparent = true
         isMovable = false
 
-        // Force dark so the black notch shape always matches the hardware cutout
         appearance = NSAppearance(named: .darkAqua)
 
-        contentView?.wantsLayer = true
+        // Use custom content view for mouse tracking
+        contentView = NotchContentView()
     }
 
-    // Must not steal focus from whatever the user is doing
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
-    // Without this override, macOS clamps the frame to screen.visibleFrame,
-    // which excludes the menu bar / notch area and pushes us down by ~38pt
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
         return frameRect
+    }
+}
+
+/// Custom view to handle mouse tracking outside of SwiftUI
+class NotchContentView: NSView {
+    private var trackingArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        
+        if let existing = trackingArea {
+            removeTrackingArea(existing)
+        }
+        
+        // REFINED: Only track the top notch area, not the full vertical expansion window.
+        // The window is 320pt tall to support expanded mode, but hover should only trigger at the very top.
+        let notchHeight: CGFloat = 38 // Slightly taller than the notch for easier triggering
+        let trackingRect = NSRect(
+            x: 0,
+            y: bounds.height - notchHeight,
+            width: bounds.width,
+            height: notchHeight
+        )
+        
+        let options: NSTrackingArea.Options = [.mouseEnteredAndExited, .activeAlways, .mouseMoved]
+        let area = NSTrackingArea(rect: trackingRect, options: options, owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        NotificationCenter.default.post(name: NSNotification.Name("notchMouseEntered"), object: nil)
+    }
+    
+    override func mouseExited(with event: NSEvent) {
+        NotificationCenter.default.post(name: NSNotification.Name("notchMouseExited"), object: nil)
     }
 }

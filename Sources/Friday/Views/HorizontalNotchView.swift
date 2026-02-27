@@ -9,7 +9,7 @@ struct HorizontalNotchView: View {
     var body: some View {
         // Measure content and update state.standardWidth
         ZStack {
-            HStack(spacing: 0) { // Using 0 spacing so we can control exactly where content sits
+            HStack(spacing: 0) {
                 leftSection
                     .frame(width: 80, alignment: .leading)
                 
@@ -36,8 +36,6 @@ struct HorizontalNotchView: View {
     }
     
     private func updateWidth(_ w: CGFloat) {
-        // Minimum width to ensure orb and battery clear the physical notch (approx 200pt)
-        // With a width of 520, the sections at -260 and +260 are well outside the notch.
         let minW: CGFloat = 520
         let target = max(minW, w)
         if abs(state.standardWidth - target) > 1 {
@@ -47,23 +45,31 @@ struct HorizontalNotchView: View {
         }
     }
 
-    // MARK: - Left: Always Orb (Standard State)
+    // MARK: - Left: Orb or Music Waveform
 
     @ViewBuilder
     private var leftSection: some View {
-        HStack(spacing: 10) {
-            MiniOrbView(
-                isActive: state.isActive,
-                isError: state.isError,
-                isDevTask: state.isDevTaskRunning
-            )
-            .padding(.leading, -4)
-            
-            if state.isActive {
-                // Small dynamic visualizer next to orb to fill "empty" space
-                MiniWaveform(isActive: true, color: activeColor)
-                    .frame(width: 24, height: 12)
-                    .transition(.opacity.combined(with: .scale))
+        if state.isPlayingMusic && !state.isActive {
+            // Music Mode
+            MiniWaveform(isActive: true, color: state.albumAccentColor)
+                .frame(width: 32, height: 14)
+                .transition(.opacity.combined(with: .scale))
+        } else {
+            // AI / System Mode
+            HStack(spacing: 10) {
+                MiniOrbView(
+                    isActive: state.isActive,
+                    isError: state.isError,
+                    isDevTask: state.isDevTaskRunning,
+                    isConnected: state.isConnected
+                )
+                .padding(.leading, -4)
+                
+                if state.isActive {
+                    MiniWaveform(isActive: true, color: activeColor)
+                        .frame(width: 24, height: 12)
+                        .transition(.opacity.combined(with: .scale))
+                }
             }
         }
     }
@@ -88,6 +94,7 @@ struct HorizontalNotchView: View {
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: state.isActive)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: state.isError)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: state.isDevTaskRunning)
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: state.hasMusicTrack)
     }
     
     private var errorContent: some View {
@@ -156,11 +163,18 @@ struct HorizontalNotchView: View {
             .transition(.opacity)
     }
 
-    // MARK: - Right: Always Battery (Standard State)
+    // MARK: - Right: Battery or Album Art
 
     @ViewBuilder
     private var rightSection: some View {
-        BatteryIndicator()
+        if state.hasMusicTrack && !state.isActive {
+            AlbumArtThumbnail(size: 22)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
+                .transition(.opacity.combined(with: .scale))
+        } else {
+            BatteryIndicator()
+        }
     }
 
     // MARK: - Helpers
@@ -187,8 +201,8 @@ struct BatteryIndicator: View {
     var body: some View {
         HStack(spacing: 6) {
             Text("\(Int(state.batteryLevel))%")
-                .font(.system(size: 10, weight: .bold, design: .rounded)) // Nice Rounded Font
-                .foregroundColor(.white) // Pure White
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundColor(.white)
                 .monospacedDigit()
                 .lineLimit(1)
                 .fixedSize()
@@ -234,14 +248,15 @@ private struct MiniOrbView: View {
     let isActive: Bool
     let isError: Bool
     let isDevTask: Bool
+    let isConnected: Bool
     
     @State private var rotation: Double = 0
 
     var body: some View {
         ZStack {
-            // Background glow — INCREASED OPACITY AND RADIUS
+            // Background glow
             Circle()
-                .fill(glowColor.opacity(isActive ? 0.6 : 0.25))
+                .fill(glowColor.opacity(isActive ? 0.6 : (isConnected ? 0.25 : 0.1)))
                 .frame(width: 28, height: 28)
                 .blur(radius: 6)
 
@@ -255,9 +270,9 @@ private struct MiniOrbView: View {
                     .offset(x: isActive ? 4 : 0)
                     .rotationEffect(.degrees(rotation))
                 
-                // White Center Shine — ADDS BRILLIANCE
+                // White Center Shine
                 Circle()
-                    .fill(RadialGradient(colors: [.white.opacity(isActive ? 0.8 : 0.4), .clear], center: .center, startRadius: 0, endRadius: 6))
+                    .fill(RadialGradient(colors: [.white.opacity(isActive ? 0.8 : (isConnected ? 0.4 : 0.2)), .clear], center: .center, startRadius: 0, endRadius: 6))
                     .frame(width: 12, height: 12)
                     .blur(radius: 1)
             }
@@ -265,8 +280,11 @@ private struct MiniOrbView: View {
             .offset(y: 2)
             .blendMode(.screen)
         }
-        .scaleEffect(isActive ? 1.25 : 1.0) // SLIGHTLY LARGER WHEN ACTIVE
+        .scaleEffect(isActive ? 1.25 : 1.0)
+        .saturation(isConnected ? 1.0 : 0.0)
+        .opacity(isConnected ? 1.0 : 0.6)
         .animation(.spring(response: 0.4, dampingFraction: 0.7), value: isActive)
+        .animation(.spring(response: 0.4, dampingFraction: 0.7), value: isConnected)
         .onAppear {
             withAnimation(.linear(duration: 4).repeatForever(autoreverses: false)) {
                 rotation = 360
@@ -281,7 +299,7 @@ private struct MiniOrbView: View {
     }
     
     private var primaryColor: Color {
-        if isError { return Color(red: 1.0, green: 0, blue: 0) } // Brighter Blood Red
+        if isError { return Color(red: 1.0, green: 0, blue: 0) }
         if isDevTask { return .orange }
         return .cyan
     }
@@ -289,6 +307,6 @@ private struct MiniOrbView: View {
     private var secondaryColor: Color {
         if isError { return .red }
         if isDevTask { return .yellow }
-        return Color(red: 0.7, green: 0.3, blue: 1.0) // Brighter Purple
+        return Color(red: 0.7, green: 0.3, blue: 1.0)
     }
 }

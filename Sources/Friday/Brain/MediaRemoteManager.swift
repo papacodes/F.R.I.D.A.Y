@@ -132,6 +132,7 @@ final class MediaRemoteManager {
                 s.nowPlayingArtist = parts[1]
                 s.isPlayingMusic   = parts.count > 2 && parts[2] == "playing"
                 s.isMusicPaused    = parts.count > 2 && parts[2] == "paused"
+                s.recordActivity()
             }
         }
     }
@@ -149,6 +150,7 @@ final class MediaRemoteManager {
         let s = FridayState.shared
         s.isPlayingMusic   = isPlaying
         s.isMusicPaused    = hasTrack && !isPlaying
+        s.recordActivity()
         s.nowPlayingTitle  = title
         s.nowPlayingArtist = artist
         s.playbackDuration = duration

@@ -88,6 +88,7 @@ final class FridayState: ObservableObject {
     @Published var isThinking   = false
     @Published var isSpeaking   = false
     @Published var isError      = false
+    @Published var isConnected  = false
     @Published var isDevTaskRunning = false
     @Published var transcript   = ""
     @Published var volume: Float = 0.0
@@ -119,6 +120,7 @@ final class FridayState: ObservableObject {
     @Published var isCharging: Bool = false
     @Published var isPluggedIn: Bool = false
     @Published var isInLowPowerMode: Bool = false
+    @Published var lastMusicActivity: Date = Date()
 
     var hasMusicTrack: Bool { isPlayingMusic || isMusicPaused }
 
@@ -133,7 +135,7 @@ final class FridayState: ObservableObject {
         if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
     }
 
-    func recordActivity() { lastActivityTime = Date() }
+    func recordActivity() { lastActivityTime = Date(); lastMusicActivity = Date() }
     
     func addActivity(type: ActivityItem.ActivityType, title: String, subtitle: String? = nil) {
         let item = ActivityItem(type: type, title: title, subtitle: subtitle)

@@ -33,6 +33,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     }
 
     func wake() async {
+        await start() // Ensure we connect first
         audioProcessor.isMuted = false
         state.recordActivity()
         
@@ -352,7 +353,10 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     }
 
     nonisolated func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
-        Task { @MainActor in self.connectionContinuation?.resume() }
+        Task { @MainActor in 
+            FridayState.shared.update(\.isConnected, to: true)
+            self.connectionContinuation?.resume() 
+        }
     }
 
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
