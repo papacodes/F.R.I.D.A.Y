@@ -28,6 +28,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        NowPlayingMonitor.shared.start()
         Task { await AppDelegate.pipeline.start() }
     }
 
