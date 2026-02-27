@@ -65,6 +65,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         state.update(\.isThinking, to: false)
         state.update(\.isSpeaking, to: false)
         state.update(\.volume, to: 0.0)
+        state.update(\.isError, to: false) // Reset error on intentional stop
     }
 
     private func connect() async {
@@ -298,8 +299,10 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 }
             }
         case "disconnect_session":
-            result = "Disconnecting. Goodbye Papa."
+            result = "Offline. Goodbye Papa."
             Task { @MainActor in
+                // Delay dismissal so we hear the final words
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
                 NotificationCenter.default.post(name: .fridayDismiss, object: nil)
             }
         default:
@@ -353,8 +356,14 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     }
 
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+        if let err = error as NSError?, err.domain == NSURLErrorDomain && err.code == NSURLErrorCancelled {
+            return
+        }
         Task { @MainActor in 
-            FridayState.shared.update(\.isError, to: true)
+            // Only set error if we didn't stop intentionally (wsTask would be nil in stop())
+            if !self.isConnecting && self.wsTask != nil {
+                FridayState.shared.update(\.isError, to: true)
+            }
             self.isConnecting = false
         }
     }

@@ -68,7 +68,7 @@ final class NotchWindowController {
         withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.9)) {
             FridayState.shared.displayState = .dismissed
         }
-        Task { await AppDelegate.pipeline.sleep() }
+        Task { await AppDelegate.pipeline.stop() }
     }
 
     // MARK: - Private

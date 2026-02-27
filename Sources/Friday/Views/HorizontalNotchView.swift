@@ -73,18 +73,43 @@ struct HorizontalNotchView: View {
     @ViewBuilder
     private var centerSection: some View {
         HStack(spacing: 12) {
-            if state.isActive {
+            if state.isError {
+                errorContent
+            } else if state.isDevTaskRunning {
+                devTaskContent
+            } else if state.isActive {
                 activeContent
             } else if state.hasMusicTrack {
                 musicContent
             } else {
-                // When Idle and in horizontal-only mode, the middle is "behind" the notch.
-                // We leave it empty or use it to push the icons far left/right.
-                Spacer()
+                idleContent
             }
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: state.isActive)
-        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: state.hasMusicTrack)
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: state.isError)
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: state.isDevTaskRunning)
+    }
+    
+    private var errorContent: some View {
+        Text("CONNECTION ERROR")
+            .font(.system(size: 10, weight: .black, design: .rounded))
+            .foregroundColor(.red)
+            .tracking(1.0)
+            .transition(.opacity)
+    }
+    
+    private var devTaskContent: some View {
+        HStack(spacing: 8) {
+            Text("RUNNING TASK")
+                .font(.system(size: 10, weight: .black, design: .rounded))
+                .foregroundColor(.orange)
+                .tracking(1.0)
+            
+            ProgressView()
+                .controlSize(.mini)
+                .tint(.orange)
+        }
+        .transition(.opacity)
     }
 
     private var activeContent: some View {
@@ -121,6 +146,14 @@ struct HorizontalNotchView: View {
             }
         }
         .transition(.opacity.combined(with: .move(edge: .bottom)))
+    }
+
+    private var idleContent: some View {
+        Text("FRIDAY IS READY")
+            .font(.system(size: 10, weight: .black, design: .rounded))
+            .foregroundColor(.white.opacity(0.3))
+            .tracking(1.5)
+            .transition(.opacity)
     }
 
     // MARK: - Right: Always Battery (Standard State)
