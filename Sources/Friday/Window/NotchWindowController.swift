@@ -4,13 +4,10 @@ import SwiftUI
 @MainActor
 final class NotchWindowController {
     private let panel: NotchWindow
-    // Holds the CGS Space at absolute level Int.max — the mechanism that lets us
-    // render above the menu bar / notch constraint (same technique as boring.notch)
     private let notchSpace = CGSSpace(level: 2147483647)
 
-    // Fixed window dimensions — large enough for expanded content.
-    // The NSWindow never moves or resizes. SwiftUI animates what's visible inside it.
-    private let windowWidth: CGFloat = 640
+    // The NSWindow never moves or resizes — SwiftUI animates the visible shape inside it
+    private let windowWidth:  CGFloat = 640
     private let windowHeight: CGFloat = 320
 
     init() {
@@ -18,57 +15,66 @@ final class NotchWindowController {
         panel.contentView = NSHostingView(rootView: FridayView())
 
         let screen = NSScreen.main ?? NSScreen.screens[0]
-
-        let closedSize = notchClosedSize(screen: screen)
-        FridayState.shared.closedNotchSize = closedSize
+        FridayState.shared.closedNotchSize = notchClosedSize(screen: screen)
 
         let origin = NSPoint(
             x: screen.frame.midX - windowWidth / 2,
             y: screen.frame.maxY - windowHeight
         )
-        let targetFrame = NSRect(origin: origin, size: CGSize(width: windowWidth, height: windowHeight))
-        panel.setFrame(targetFrame, display: false)
+        panel.setFrame(NSRect(origin: origin, size: CGSize(width: windowWidth, height: windowHeight)), display: false)
 
         panel.ignoresMouseEvents = true
         panel.orderFrontRegardless()
         notchSpace.windows.insert(panel)
+
+        // Start in standard (alive) state immediately
+        goStandard()
     }
 
+    // MARK: - Public API
+
+    /// Hotkey handler — toggles between standard and open
     func toggle() {
-        FridayState.shared.isExpanded ? collapse() : expand()
+        switch FridayState.shared.displayState {
+        case .dismissed, .standard: goOpen()
+        case .open:                 goStandard()
+        }
     }
 
-    func expand() {
-        guard !FridayState.shared.isExpanded else { return }
+    func goStandard() {
+        panel.ignoresMouseEvents = true
+        withAnimation(.interactiveSpring(response: 0.38, dampingFraction: 0.8)) {
+            FridayState.shared.displayState = .standard
+        }
+    }
+
+    func goOpen() {
         panel.ignoresMouseEvents = false
-        FridayState.shared.isExpanded = true
+        withAnimation(.interactiveSpring(response: 0.38, dampingFraction: 0.8)) {
+            FridayState.shared.displayState = .open
+        }
         Task { await AppDelegate.pipeline.wake() }
     }
 
-    func collapse() {
-        guard FridayState.shared.isExpanded else { return }
-        FridayState.shared.isExpanded = false
-        FridayState.shared.showInfoCard = false
+    func dismiss() {
         panel.ignoresMouseEvents = true
+        withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.9)) {
+            FridayState.shared.displayState = .dismissed
+        }
         Task { await AppDelegate.pipeline.sleep() }
     }
 
     // MARK: - Private
 
     private func notchClosedSize(screen: NSScreen) -> CGSize {
-        var width: CGFloat = 200
+        var width:  CGFloat = 200
         var height: CGFloat = 32
-
         if let left = screen.auxiliaryTopLeftArea,
            let right = screen.auxiliaryTopRightArea {
             let w = right.minX - left.maxX
             if w > 0 { width = w }
         }
-
-        if screen.safeAreaInsets.top > 0 {
-            height = screen.safeAreaInsets.top
-        }
-
+        if screen.safeAreaInsets.top > 0 { height = screen.safeAreaInsets.top }
         return CGSize(width: width, height: height)
     }
 }

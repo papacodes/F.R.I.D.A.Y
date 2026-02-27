@@ -28,7 +28,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        NowPlayingMonitor.shared.start()
+        MediaRemoteManager.shared.start()
         Task { await AppDelegate.pipeline.start() }
     }
 
