@@ -1,131 +1,89 @@
 import SwiftUI
 
+/// Music-tab: Mimics the Hero structure of Home but with the player as the focus.
 struct MusicTabView: View {
     @ObservedObject private var state = FridayState.shared
 
     var body: some View {
-        Group {
-            if state.hasMusicTrack {
-                playerView
-                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
-            } else {
-                emptyView
-                    .transition(.opacity)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    // MARK: - Full player (Liquid Glass Style)
-
-    private var playerView: some View {
-        ZStack {
-            // Blurred album art backdrop - More vibrant and high-end
-            if let art = state.albumArt {
-                Image(nsImage: art)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .scaleEffect(1.4)
-                    .blur(radius: 60)
-                    .opacity(state.isPlayingMusic ? 0.45 : 0.2)
-                    .clipped()
-                    .animation(.easeInOut(duration: 0.8), value: state.isPlayingMusic)
-            }
-
-            // High-contrast overlay
-            Color.black.opacity(0.35)
-
-            HStack(alignment: .center, spacing: 28) {
-                // Album art with a crisp edge
-                AlbumArtView(size: 110, cornerRadius: 18, showBackdrop: true)
-                    .shadow(color: .black.opacity(0.4), radius: 20, x: 0, y: 10)
-
-                // Track info + controls
-                VStack(alignment: .leading, spacing: 0) {
-                    // Title - Pure White, Heavy Weight
-                    MarqueeText(
-                        text: state.nowPlayingTitle.isEmpty ? "NOTHING PLAYING" : state.nowPlayingTitle.uppercased(),
-                        font: .system(size: 14, weight: .black, design: .rounded),
-                        color: .white // Pure White
-                    )
-                    .tracking(0.5)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .frame(height: 20)
-
-                    // Artist - Strong semi-white
-                    MarqueeText(
-                        text: state.nowPlayingArtist.isEmpty ? "Ready to play" : state.nowPlayingArtist,
-                        font: .system(size: 12, weight: .bold, design: .rounded),
-                        color: .white.opacity(0.6) // Pure White translucent
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .frame(height: 18)
-                    .padding(.top, 2)
-
-                    Spacer(minLength: 12)
-
-                    // Progress
-                    MusicProgressSlider()
-                        .padding(.vertical, 4)
-
-                    // Controls row
-                    HStack {
-                        MusicControlsView()
-                            .scaleEffect(0.9)
-                        
-                        Spacer()
-                        
-                        // Active Waveform
-                        if state.isPlayingMusic {
-                            MiniWaveform(isActive: true, color: .white.opacity(0.8))
-                                .frame(width: 32, height: 16)
-                                .transition(.opacity.combined(with: .scale))
-                        }
-                    }
-                    .padding(.top, 8)
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 16)
-            .background(
-                RoundedRectangle(cornerRadius: 24)
-                    .fill(Color.white.opacity(0.03))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 24)
-                            .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
-                    )
-            )
-            .padding(8)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .animation(.spring(response: 0.45, dampingFraction: 0.85), value: state.nowPlayingTitle)
-    }
-
-    // MARK: - Empty state
-
-    private var emptyView: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 0) {
+            // HERO AREA: Full Player
             ZStack {
-                Circle()
-                    .fill(Color.white.opacity(0.04))
-                    .frame(width: 64, height: 64)
-                Image(systemName: "music.note.list")
-                    .font(.system(size: 28, weight: .light))
-                    .foregroundColor(.white.opacity(0.12))
-            }
-            
-            VStack(spacing: 4) {
-                Text("READY TO PLAY")
-                    .font(.system(size: 11, weight: .black, design: .rounded))
-                    .foregroundColor(.white.opacity(0.25))
-                    .tracking(1.0)
+                if let art = state.albumArt {
+                    Image(nsImage: art)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(height: 160)
+                        .blur(radius: 40)
+                        .opacity(0.3)
+                        .clipped()
+                }
                 
-                Text("Ask Friday to play your favorites")
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
-                    .foregroundColor(.white.opacity(0.15))
+                HStack(spacing: 20) {
+                    AlbumArtView(size: 80, cornerRadius: 12, showBackdrop: false)
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        MarqueeText(
+                            text: state.nowPlayingTitle.isEmpty ? "NOTHING PLAYING" : state.nowPlayingTitle.uppercased(),
+                            font: .system(size: 13, weight: .black, design: .rounded),
+                            color: .white
+                        )
+                        .frame(height: 18)
+                        
+                        Text(state.nowPlayingArtist.isEmpty ? "Idle" : state.nowPlayingArtist)
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .foregroundColor(.white.opacity(0.5))
+                        
+                        MusicProgressSlider()
+                            .padding(.top, 4)
+                        
+                        MusicControlsView()
+                            .scaleEffect(0.8)
+                            .padding(.top, 2)
+                    }
+                }
+                .padding(.horizontal, 24)
+            }
+            .frame(height: 160)
+            .background(Color.white.opacity(0.03))
+            .cornerRadius(20)
+            .padding(.top, 10)
+
+            Spacer()
+
+            // BOTTOM ROW: Persistent System Pill for balance
+            HStack {
+                Spacer()
+                MiniSystemPill() // Re-using local version or proxy
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+        }
+    }
+}
+
+// Small Proxy for symmetry
+private struct MiniSystemPill: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .trailing, spacing: 0) {
+                Text(Date(), format: .dateTime.hour().minute())
+                    .font(.system(size: 16, weight: .black, design: .rounded))
+                    .foregroundColor(.white)
+                    .monospacedDigit()
+                
+                Text(Date(), format: .dateTime.weekday(.wide).day())
+                    .font(.system(size: 8, weight: .bold, design: .rounded))
+                    .foregroundColor(.white.opacity(0.35))
+                    .textCase(.uppercase)
+                    .tracking(0.5)
             }
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(
+            Capsule()
+                .fill(Color.white.opacity(0.045))
+                .overlay(Capsule().stroke(Color.white.opacity(0.06), lineWidth: 0.5))
+        )
     }
 }

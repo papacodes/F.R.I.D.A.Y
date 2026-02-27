@@ -4,26 +4,32 @@ struct FridayStatusPanelView: View {
     @ObservedObject private var state = FridayState.shared
 
     var body: some View {
-        VStack(spacing: 20) { // Increased spacing
-            // Orb — Focused and Liquid
-            SiriOrbView(volume: state.volume, isThinking: state.isThinking, isError: state.isError, isDevTask: state.isDevTaskRunning, isConnected: state.isConnected)
-                .frame(width: 80, height: 80)
-                .scaleEffect(1.4)
-                .shadow(color: statusColor.opacity(0.3), radius: 20)
-                .padding(.top, 12) // PUSH IT DOWN to avoid clipping
+        VStack(spacing: 20) {
+            // Restore Orb to its original home
+            SiriOrbView(
+                volume: state.volume,
+                isThinking: state.isThinking,
+                isError: state.isError,
+                isDevTask: state.isDevTaskRunning,
+                isConnected: state.isConnected
+            )
+            .frame(width: 80, height: 80)
+            .scaleEffect(1.4)
+            .shadow(color: statusColor.opacity(0.3), radius: 20)
+            .padding(.top, 12)
 
-            // Status label — Pure White, Rounded, Strong Tracking
+            // Status label
             Text(statusText.uppercased())
                 .font(.system(size: 11, weight: .black, design: .rounded))
-                .foregroundColor(.white) // Pure White
+                .foregroundColor(.white)
                 .tracking(1.5)
                 .shadow(color: .black.opacity(0.5), radius: 2)
 
-            // Transcript — Pure White but translucent for clarity, beautiful typeset
+            // Transcript
             if !state.transcript.isEmpty {
                 Text("\u{201C}\(state.transcript)\u{201D}")
                     .font(.system(size: 14, weight: .bold, design: .rounded))
-                    .foregroundColor(.white.opacity(0.85)) // Pure White but readable
+                    .foregroundColor(.white.opacity(0.85))
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
                     .padding(.horizontal, 32)

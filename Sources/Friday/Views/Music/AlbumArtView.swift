@@ -36,7 +36,7 @@ struct AlbumArtView: View {
                     .overlay(
                         Image(systemName: "music.note")
                             .font(.system(size: size * 0.32, weight: .light))
-                            .foregroundColor(.white.opacity(0.2))
+                            .foregroundColor(.white.opacity(0.4)) // PURE WHITE FALLBACK
                     )
             }
         }
@@ -56,11 +56,11 @@ struct AlbumArtThumbnail: View {
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .frame(width: size, height: size)
-                    .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
             } else {
                 Image(systemName: "music.note")
                     .font(.system(size: size * 0.55, weight: .medium))
-                    .foregroundColor(.cyan.opacity(0.8))
+                    .foregroundColor(.white.opacity(0.6)) // PURE WHITE FALLBACK
                     .frame(width: size, height: size)
             }
         }

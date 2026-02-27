@@ -15,14 +15,21 @@ struct MiniWaveform: View {
                     .fill(color.opacity(animating ? 0.85 : 0.3))
                     .frame(width: 2.5, height: animating ? heights[i] : 3)
                     .animation(
+                        animating ? 
                         .easeInOut(duration: 0.4 + Double(i) * 0.07)
                             .repeatForever(autoreverses: true)
-                            .delay(Double(i) * 0.1),
+                            .delay(Double(i) * 0.1) :
+                        .spring(response: 0.3, dampingFraction: 0.7),
                         value: animating
                     )
             }
         }
         .onAppear { animating = isActive }
-        .onChange(of: isActive) { animating = $0 }
+        .onChange(of: isActive) { newValue in
+            // Use withAnimation to ensure the state change triggers the transition back to static bars
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                animating = newValue
+            }
+        }
     }
 }

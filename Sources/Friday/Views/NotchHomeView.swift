@@ -1,13 +1,12 @@
 import SwiftUI
 
-/// Home-tab: Focused Siri-style experience with a giant orb.
-/// Replaces the messy three-column layout with a focused, future-facing design.
+/// Home-tab: Reverted to the stable "Premium v2" design.
 struct NotchHomeView: View {
     @ObservedObject private var state = FridayState.shared
 
     var body: some View {
         ZStack {
-            // Background Liquid Glow (Fills the island for depth)
+            // Background Glow
             Circle()
                 .fill(RadialGradient(
                     colors: [Color.cyan.opacity(0.12), .clear],
@@ -18,11 +17,11 @@ struct NotchHomeView: View {
                 .blur(radius: 40)
 
             VStack(spacing: 28) {
-                // Focus: Large Siri Orb with status and transcript
+                // Focus: Large Siri Orb with status
                 FridayStatusPanelView()
                     .padding(.top, 12)
 
-                // Secondary Row: Floating Pills (Inspired by boring.notch's clean HUDs)
+                // Secondary Row: Floating Pills
                 HStack(alignment: .bottom, spacing: 14) {
                     if state.hasMusicTrack {
                         MiniMusicPill()
@@ -49,7 +48,6 @@ private struct MiniMusicPill: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            // Small Artwork with subtle border
             AlbumArtThumbnail(size: 32)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
@@ -86,7 +84,6 @@ private struct MiniSystemPill: View {
                     .font(.system(size: 16, weight: .black, design: .rounded))
                     .foregroundColor(.white)
                     .monospacedDigit()
-                    .shadow(color: .white.opacity(0.1), radius: 4)
                 
                 Text(Date(), format: .dateTime.weekday(.wide).day())
                     .font(.system(size: 8, weight: .bold, design: .rounded))

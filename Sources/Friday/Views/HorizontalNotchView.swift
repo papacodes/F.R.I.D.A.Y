@@ -49,9 +49,10 @@ struct HorizontalNotchView: View {
 
     @ViewBuilder
     private var leftSection: some View {
+        // ONLY show waveform if music is ACTIVELY playing
         if state.isPlayingMusic && !state.isActive {
             // Music Mode
-            MiniWaveform(isActive: true, color: state.albumAccentColor)
+            MiniWaveform(isActive: true, color: .white) // PURE WHITE WAVEFORM
                 .frame(width: 32, height: 14)
                 .transition(.opacity.combined(with: .scale))
         } else {
@@ -85,7 +86,7 @@ struct HorizontalNotchView: View {
                 devTaskContent
             } else if state.isActive {
                 activeContent
-            } else if state.hasMusicTrack {
+            } else if state.isPlayingMusic { // ONLY show track info if music is playing
                 musicContent
             } else {
                 idleContent
@@ -94,7 +95,7 @@ struct HorizontalNotchView: View {
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: state.isActive)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: state.isError)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: state.isDevTaskRunning)
-        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: state.hasMusicTrack)
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: state.isPlayingMusic)
     }
     
     private var errorContent: some View {
@@ -148,7 +149,7 @@ struct HorizontalNotchView: View {
             if !state.nowPlayingArtist.isEmpty {
                 Text(state.nowPlayingArtist)
                     .font(.system(size: 9, weight: .bold, design: .rounded))
-                    .foregroundColor(state.albumAccentColor.opacity(0.9))
+                    .foregroundColor(.white.opacity(0.7)) // WHITE INSTEAD OF CYAN
                     .lineLimit(1)
             }
         }
@@ -167,7 +168,8 @@ struct HorizontalNotchView: View {
 
     @ViewBuilder
     private var rightSection: some View {
-        if state.hasMusicTrack && !state.isActive {
+        // ONLY show album art if music is playing
+        if state.isPlayingMusic && !state.isActive {
             AlbumArtThumbnail(size: 22)
                 .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
