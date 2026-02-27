@@ -70,16 +70,69 @@ final class MediaRemoteManager {
 
         fetch()
 
-        positionTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.interpolatePosition() }
+        // Poll every 2s as a safety net in case notifications don't fire
+        positionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.fetch()
+                self?.interpolatePosition()
+            }
         }
     }
 
     // MARK: - Fetch
 
     func fetch() {
-        _getNowPlayingInfo?(.main) { [weak self] dict in
-            self?.processInfo(dict as? [String: Any] ?? [:])
+        if let fn = _getNowPlayingInfo {
+            fn(.main) { [weak self] dict in
+                let info = dict as? [String: Any] ?? [:]
+                // If MediaRemote returned nothing useful, fall back to osascript
+                if (info["kMRMediaRemoteNowPlayingInfoTitle"] as? String ?? "").isEmpty {
+                    self?.osascriptFallback()
+                } else {
+                    self?.processInfo(info)
+                }
+            }
+        } else {
+            osascriptFallback()
+        }
+    }
+
+    private func osascriptFallback() {
+        Task.detached(priority: .background) {
+            let script = """
+            tell application "System Events"
+                if (name of processes) contains "Music" then
+                    tell application "Music"
+                        if player state is playing then
+                            return (name of current track) & "|||" & (artist of current track) & "|||playing"
+                        else if player state is paused then
+                            return (name of current track) & "|||" & (artist of current track) & "|||paused"
+                        end if
+                    end tell
+                end if
+            end tell
+            """
+            let p = Process()
+            p.launchPath = "/usr/bin/osascript"
+            p.arguments  = ["-e", script]
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            p.standardError  = Pipe()
+            try? p.run(); p.waitUntilExit()
+            let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let parts = out.components(separatedBy: "|||")
+            await MainActor.run {
+                let s = FridayState.shared
+                guard parts.count >= 2 else {
+                    s.isPlayingMusic = false; s.isMusicPaused = false
+                    s.nowPlayingTitle = ""; s.nowPlayingArtist = ""; return
+                }
+                s.nowPlayingTitle  = parts[0]
+                s.nowPlayingArtist = parts[1]
+                s.isPlayingMusic   = parts.count > 2 && parts[2] == "playing"
+                s.isMusicPaused    = parts.count > 2 && parts[2] == "paused"
+            }
         }
     }
 
