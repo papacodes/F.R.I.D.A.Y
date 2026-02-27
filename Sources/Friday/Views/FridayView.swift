@@ -3,7 +3,6 @@ import SwiftUI
 // MARK: - Size constants (single source of truth)
 
 enum NotchSizes {
-    static let standardWidth: CGFloat = 440   // horizontal bar width
     static let openWidth:     CGFloat = 660   // slightly wider for a more premium spread
     static let openHeight:    CGFloat = 280   // slightly taller for better breathing room
 }
@@ -19,8 +18,12 @@ struct FridayView: View {
         let h = state.closedNotchSize.height
         switch state.displayState {
         case .dismissed: return state.closedNotchSize
-        case .standard:  return CGSize(width: NotchSizes.standardWidth, height: h)
-        case .open:      return CGSize(width: NotchSizes.openWidth,     height: NotchSizes.openHeight)
+        case .standard:  
+            // If active (speaking/listening), grow downward. If idle, stay inside notch height.
+            let targetHeight = state.isActive ? h * 2.2 : h
+            return CGSize(width: state.standardWidth, height: targetHeight)
+        case .open:      
+            return CGSize(width: NotchSizes.openWidth, height: NotchSizes.openHeight)
         }
     }
 
@@ -36,7 +39,7 @@ struct FridayView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            // Pitch Black Background — Essential for blending with the notch
+            // Pitch Black Background
             Color.black
                 .frame(width: notchSize.width, height: notchSize.height)
                 .clipShape(
@@ -45,7 +48,6 @@ struct FridayView: View {
                         bottomCornerRadius: bottomCornerRadius
                     )
                 )
-                // Subtle outline to separate it slightly from the screen
                 .overlay(
                     NotchShape(
                         topCornerRadius: topCornerRadius,
@@ -55,10 +57,13 @@ struct FridayView: View {
                 )
                 .shadow(color: .black.opacity(state.displayState == .dismissed ? 0 : 0.6), radius: 40, x: 0, y: 20)
                 .animation(spring, value: state.displayState)
+                .animation(spring, value: state.isActive)
+                .animation(spring, value: state.standardWidth)
 
-            // Content — cross-fades between states
+            // Content
             notchContent
                 .animation(spring, value: state.displayState)
+                .animation(spring, value: state.isActive)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .ignoresSafeArea()
@@ -69,21 +74,25 @@ struct FridayView: View {
 
     @ViewBuilder
     private var notchContent: some View {
+        let notchH = state.closedNotchSize.height
+        
         switch state.displayState {
 
         case .dismissed:
             NotchIdleIndicator()
                 .frame(
                     width:  state.closedNotchSize.width,
-                    height: state.closedNotchSize.height
+                    height: notchH
                 )
                 .transition(.opacity)
 
         case .standard:
             HorizontalNotchView()
+                // Only push content down if we are in the "Active" (tall) state
+                .padding(.top, state.isActive ? notchH : 0)
                 .frame(
-                    width:  NotchSizes.standardWidth,
-                    height: state.closedNotchSize.height
+                    width:  state.standardWidth,
+                    height: state.isActive ? notchH * 2.2 : notchH
                 )
                 .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
 

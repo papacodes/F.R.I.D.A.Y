@@ -1,5 +1,6 @@
 @preconcurrency import AVFoundation
 import Foundation
+import SwiftUI
 
 @MainActor
 final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
@@ -106,6 +107,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         Memory: You use the ~/Documents/notes directory as your long-term memory. 
         Projects: When Papa mentions a project (e.g., "Project Oats"), use your tools to load context from relevant notes.
         Dev Brain: You help with engineering tasks using Claude Code.
+        Dormant: You can disconnect your own session to save power/API cost by calling disconnect_session. Do this when Papa says goodbye or when the conversation is finished.
         """
 
         let msg = SetupMessage(
@@ -122,7 +124,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                     Self.devTaskTool, Self.weatherTool, Self.timeTool,
                     Self.mapTool, Self.searchTool, Self.musicTool,
                     Self.playlistTool, Self.notesTool, Self.remindersTool,
-                    Self.calendarTool
+                    Self.calendarTool, Self.disconnectTool
                 ])]
             )
         )
@@ -237,7 +239,9 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         switch call.name {
         case "execute_dev_task":
             if let prompt = call.args["prompt"] {
+                state.update(\.isDevTaskRunning, to: true)
                 result = (try? await devBrain.ask(prompt)) ?? "Error running task."
+                state.update(\.isDevTaskRunning, to: false)
             }
         case "get_weather":
             result = await WeatherSkill.fetchWeather()
@@ -292,6 +296,11 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                     let d = call.args["date"].map { DateHelper.parseAndFormat($0) }
                     result = CalendarSkill.getSchedule(forDate: d)
                 }
+            }
+        case "disconnect_session":
+            result = "Disconnecting. Goodbye Papa."
+            Task { @MainActor in
+                NotificationCenter.default.post(name: .fridayDismiss, object: nil)
             }
         default:
             result = "Tool not found."
@@ -457,5 +466,11 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             ],
             required: ["action"]
         )
+    )
+
+    private static let disconnectTool = FunctionDecl(
+        name: "disconnect_session",
+        description: "Immediately disconnect the live session and go to sleep. Use this when the user says goodbye or tells you to stop listening.",
+        parameters: FunctionParams(type: "object", properties: [:], required: [])
     )
 }

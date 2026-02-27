@@ -1,53 +1,86 @@
 import SwiftUI
 
 /// State 2 — the horizontal alive bar.
-/// Same height as the physical notch, expanded to 440pt.
-/// Shows: left indicator | status / track info | clock
+/// Same height as the physical notch, expanded horizontally.
+/// Shows: left indicator | status / track info | right indicator
 struct HorizontalNotchView: View {
     @ObservedObject private var state = FridayState.shared
 
     var body: some View {
-        HStack(spacing: 0) {
-            leftSection
-                .frame(width: 52)
-
-            divider
-
-            centerSection
-                .frame(maxWidth: .infinity)
-
-            divider
-
-            rightSection
-                .frame(width: 64)
+        // Measure content and update state.standardWidth
+        ZStack {
+            HStack(spacing: 0) { // Using 0 spacing so we can control exactly where content sits
+                leftSection
+                    .frame(width: 80, alignment: .leading)
+                
+                centerSection
+                    .frame(maxWidth: .infinity)
+                
+                rightSection
+                    .frame(width: 80, alignment: .trailing)
+            }
+            .padding(.horizontal, 24)
+            .background(
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear {
+                            updateWidth(geo.size.width)
+                        }
+                        .onChange(of: geo.size.width) { newWidth in
+                            updateWidth(newWidth)
+                        }
+                }
+            )
         }
-        .padding(.horizontal, 16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxHeight: .infinity)
+    }
+    
+    private func updateWidth(_ w: CGFloat) {
+        // Minimum width to ensure orb and battery clear the physical notch (approx 200pt)
+        // With a width of 520, the sections at -260 and +260 are well outside the notch.
+        let minW: CGFloat = 520
+        let target = max(minW, w)
+        if abs(state.standardWidth - target) > 1 {
+            DispatchQueue.main.async {
+                state.standardWidth = target
+            }
+        }
     }
 
-    // MARK: - Left: album art thumbnail or orb
+    // MARK: - Left: Always Orb (Standard State)
 
     @ViewBuilder
     private var leftSection: some View {
-        if state.hasMusicTrack && !state.isActive {
-            AlbumArtThumbnail(size: 20)
-                .transition(.opacity.combined(with: .scale))
-        } else {
-            MiniOrbView(isActive: state.isActive)
+        HStack(spacing: 10) {
+            MiniOrbView(
+                isActive: state.isActive,
+                isError: state.isError,
+                isDevTask: state.isDevTaskRunning
+            )
+            .padding(.leading, -4)
+            
+            if state.isActive {
+                // Small dynamic visualizer next to orb to fill "empty" space
+                MiniWaveform(isActive: true, color: activeColor)
+                    .frame(width: 24, height: 12)
+                    .transition(.opacity.combined(with: .scale))
+            }
         }
     }
 
-    // MARK: - Center
+    // MARK: - Center: Status or Track Title
 
     @ViewBuilder
     private var centerSection: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             if state.isActive {
                 activeContent
             } else if state.hasMusicTrack {
                 musicContent
             } else {
-                idleContent
+                // When Idle and in horizontal-only mode, the middle is "behind" the notch.
+                // We leave it empty or use it to push the icons far left/right.
+                Spacer()
             }
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: state.isActive)
@@ -56,17 +89,14 @@ struct HorizontalNotchView: View {
 
     private var activeContent: some View {
         HStack(spacing: 8) {
-            MiniWaveform(isActive: true, color: .cyan)
-                .frame(width: 36, height: 14)
-
             Text(activeLabel.uppercased())
-                .font(.system(size: 10, weight: .bold, design: .rounded))
-                .foregroundColor(.white.opacity(0.9))
-                .tracking(0.5)
+                .font(.system(size: 10, weight: .black, design: .rounded))
+                .foregroundColor(.white)
+                .tracking(1.0)
 
             if !state.transcript.isEmpty {
                 Text(state.transcript)
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
                     .foregroundColor(.white.opacity(0.45))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -76,58 +106,28 @@ struct HorizontalNotchView: View {
     }
 
     private var musicContent: some View {
-        HStack(spacing: 10) {
-            if state.isPlayingMusic {
-                MiniWaveform(isActive: true, color: state.albumAccentColor)
-                    .frame(width: 24, height: 12)
-            } else {
-                Image(systemName: "pause.fill")
-                    .font(.system(size: 9))
-                    .foregroundColor(.white.opacity(0.4))
-            }
-
-            VStack(alignment: .leading, spacing: 0) {
-                Text(state.nowPlayingTitle)
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
-                Text(state.nowPlayingArtist)
-                    .font(.system(size: 9, weight: .medium, design: .rounded))
-                    .foregroundColor(state.albumAccentColor.opacity(0.85))
-                    .lineLimit(1)
-            }
-        }
-        .transition(.opacity.combined(with: .move(edge: .trailing)))
-    }
-
-    private var idleContent: some View {
-        HStack(spacing: 8) {
-            Text("F·R·I·D·A·Y")
+        VStack(alignment: .center, spacing: 0) {
+            Text(state.nowPlayingTitle.uppercased())
                 .font(.system(size: 10, weight: .black, design: .rounded))
-                .foregroundColor(.white.opacity(0.25))
-                .tracking(1.5)
+                .foregroundColor(.white)
+                .lineLimit(1)
+                .tracking(0.5)
             
-            Circle()
-                .fill(Color.white.opacity(0.1))
-                .frame(width: 3, height: 3)
-
-            Text("READY")
-                .font(.system(size: 9, weight: .bold, design: .rounded))
-                .foregroundColor(.white.opacity(0.15))
-                .tracking(1.0)
+            if !state.nowPlayingArtist.isEmpty {
+                Text(state.nowPlayingArtist)
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .foregroundColor(state.albumAccentColor.opacity(0.9))
+                    .lineLimit(1)
+            }
         }
-        .transition(.opacity)
+        .transition(.opacity.combined(with: .move(edge: .bottom)))
     }
 
-    // MARK: - Right: compact clock
+    // MARK: - Right: Always Battery (Standard State)
 
+    @ViewBuilder
     private var rightSection: some View {
-        TimelineView(.animation(minimumInterval: 30)) { _ in
-            Text(Date(), format: .dateTime.hour().minute())
-                .font(.system(size: 12, weight: .medium, design: .rounded))
-                .foregroundColor(.white.opacity(0.5))
-                .monospacedDigit()
-        }
+        BatteryIndicator()
     }
 
     // MARK: - Helpers
@@ -136,14 +136,62 @@ struct HorizontalNotchView: View {
         if state.isListening { return "Listening" }
         if state.isThinking  { return "Thinking"  }
         if state.isSpeaking  { return "Speaking"  }
-        return "Working"
+        return "Friday"
+    }
+    
+    private var activeColor: Color {
+        if state.isError { return .red }
+        if state.isDevTaskRunning { return .orange }
+        return .cyan
+    }
+}
+
+// MARK: - Battery Indicator (Boring Notch style)
+
+struct BatteryIndicator: View {
+    @ObservedObject private var state = FridayState.shared
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("\(Int(state.batteryLevel))%")
+                .font(.system(size: 10, weight: .bold, design: .rounded)) // Nice Rounded Font
+                .foregroundColor(.white) // Pure White
+                .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize()
+
+            ZStack(alignment: .leading) {
+                // Outer shell
+                Image(systemName: "battery.0")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .foregroundColor(.white.opacity(0.25))
+                    .frame(width: 24)
+
+                // Fill
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(batteryColor)
+                    .frame(width: CGFloat(state.batteryLevel / 100.0 * 18), height: 7)
+                    .padding(.leading, 2)
+                
+                // Bolt if charging
+                if state.isCharging || state.isPluggedIn {
+                    Image(systemName: "bolt.fill")
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .foregroundColor(.white)
+                        .frame(width: 8, height: 8)
+                        .offset(x: 8)
+                }
+            }
+        }
     }
 
-    private var divider: some View {
-        Rectangle()
-            .fill(Color.white.opacity(0.12))
-            .frame(width: 0.5, height: 14)
-            .padding(.horizontal, 8)
+    private var batteryColor: Color {
+        if state.isInLowPowerMode { return .yellow }
+        if state.batteryLevel <= 20 { return .red }
+        if state.isCharging || state.isPluggedIn { return .green }
+        return .white.opacity(0.8)
     }
 }
 
@@ -151,35 +199,63 @@ struct HorizontalNotchView: View {
 
 private struct MiniOrbView: View {
     let isActive: Bool
+    let isError: Bool
+    let isDevTask: Bool
+    
     @State private var rotation: Double = 0
 
     var body: some View {
         ZStack {
-            // Background glow
+            // Background glow — INCREASED OPACITY AND RADIUS
             Circle()
-                .fill(Color.cyan.opacity(isActive ? 0.3 : 0.1))
-                .frame(width: 24, height: 24)
-                .blur(radius: 4)
+                .fill(glowColor.opacity(isActive ? 0.6 : 0.25))
+                .frame(width: 28, height: 28)
+                .blur(radius: 6)
 
             // Core
             ZStack {
                 Circle()
-                    .fill(RadialGradient(colors: [.cyan.opacity(0.8), .clear], center: .center, startRadius: 0, endRadius: 10))
+                    .fill(RadialGradient(colors: [primaryColor.opacity(0.9), .clear], center: .center, startRadius: 0, endRadius: 10))
                 
                 Circle()
-                    .fill(RadialGradient(colors: [.purple.opacity(0.6), .clear], center: .center, startRadius: 0, endRadius: 8))
+                    .fill(RadialGradient(colors: [secondaryColor.opacity(0.8), .clear], center: .center, startRadius: 0, endRadius: 8))
                     .offset(x: isActive ? 4 : 0)
                     .rotationEffect(.degrees(rotation))
+                
+                // White Center Shine — ADDS BRILLIANCE
+                Circle()
+                    .fill(RadialGradient(colors: [.white.opacity(isActive ? 0.8 : 0.4), .clear], center: .center, startRadius: 0, endRadius: 6))
+                    .frame(width: 12, height: 12)
+                    .blur(radius: 1)
             }
             .frame(width: 18, height: 18)
+            .offset(y: 2)
             .blendMode(.screen)
         }
-        .scaleEffect(isActive ? 1.1 : 0.9)
+        .scaleEffect(isActive ? 1.25 : 1.0) // SLIGHTLY LARGER WHEN ACTIVE
         .animation(.spring(response: 0.4, dampingFraction: 0.7), value: isActive)
         .onAppear {
             withAnimation(.linear(duration: 4).repeatForever(autoreverses: false)) {
                 rotation = 360
             }
         }
+    }
+    
+    private var glowColor: Color {
+        if isError { return .red }
+        if isDevTask { return .orange }
+        return .cyan
+    }
+    
+    private var primaryColor: Color {
+        if isError { return Color(red: 1.0, green: 0, blue: 0) } // Brighter Blood Red
+        if isDevTask { return .orange }
+        return .cyan
+    }
+    
+    private var secondaryColor: Color {
+        if isError { return .red }
+        if isDevTask { return .yellow }
+        return Color(red: 0.7, green: 0.3, blue: 1.0) // Brighter Purple
     }
 }

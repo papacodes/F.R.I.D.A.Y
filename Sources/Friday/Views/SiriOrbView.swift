@@ -3,6 +3,8 @@ import SwiftUI
 struct SiriOrbView: View {
     let volume: Float
     let isThinking: Bool
+    let isError: Bool
+    let isDevTask: Bool
 
     @State private var rotation: Double = 0
     @State private var pulse: CGFloat = 1.0
@@ -11,26 +13,26 @@ struct SiriOrbView: View {
         ZStack {
             // Background blur/glow
             Circle()
-                .fill(Color.cyan.opacity(0.1))
+                .fill(glowColor.opacity(0.15))
                 .frame(width: 90, height: 90)
                 .blur(radius: 20)
 
             // Dynamic Blobs
             ZStack {
-                // Layer 1: Deep Blue (Core)
-                orbBlob(color: Color(red: 0, green: 0.4, blue: 1), 
+                // Layer 1: Core
+                orbBlob(color: primaryColor, 
                         scale: 1.2 + CGFloat(volume) * 1.5, 
                         offset: isThinking ? 5 : 0, 
                         rotation: rotation)
                 
-                // Layer 2: Cyan (Highlight)
-                orbBlob(color: .cyan, 
+                // Layer 2: Highlight
+                orbBlob(color: secondaryColor, 
                         scale: 1.0 + CGFloat(volume) * 2.5, 
                         offset: isThinking ? -8 : 0, 
                         rotation: -rotation * 1.2)
                 
-                // Layer 3: Purple (Accent)
-                orbBlob(color: .purple, 
+                // Layer 3: Accent
+                orbBlob(color: accentColor, 
                         scale: 1.1 + CGFloat(volume) * 1.8, 
                         offset: isThinking ? 10 : 2, 
                         rotation: rotation * 0.7)
@@ -74,5 +76,29 @@ struct SiriOrbView: View {
             .rotationEffect(.degrees(rotation))
             .scaleEffect(scale * pulse)
             .blur(radius: 10)
+    }
+    
+    private var glowColor: Color {
+        if isError { return .red }
+        if isDevTask { return .orange }
+        return .cyan
+    }
+    
+    private var primaryColor: Color {
+        if isError { return Color(red: 0.8, green: 0, blue: 0) } // Blood Red
+        if isDevTask { return .orange }
+        return Color(red: 0, green: 0.4, blue: 1)
+    }
+    
+    private var secondaryColor: Color {
+        if isError { return .red }
+        if isDevTask { return .yellow }
+        return .cyan
+    }
+    
+    private var accentColor: Color {
+        if isError { return .orange }
+        if isDevTask { return .red }
+        return .purple
     }
 }

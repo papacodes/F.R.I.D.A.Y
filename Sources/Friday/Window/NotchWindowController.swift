@@ -27,6 +27,13 @@ final class NotchWindowController {
         panel.orderFrontRegardless()
         notchSpace.windows.insert(panel)
 
+        // Listen for autonomous dismissal
+        NotificationCenter.default.addObserver(forName: .fridayDismiss, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                self?.dismiss()
+            }
+        }
+
         // Start in standard (alive) state immediately
         goStandard()
     }

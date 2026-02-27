@@ -58,7 +58,7 @@ final class AudioProcessor: @unchecked Sendable {
             }
 
             let muted = self.isMuted
-            let isActive = rms > 0.01 && !muted
+            let isActive = rms > 0.05 && !muted
             
             // CRITICAL: Signal activity to prevent auto-dismissal
             if isActive {

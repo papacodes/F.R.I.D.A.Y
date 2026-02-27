@@ -29,6 +29,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         MediaRemoteManager.shared.start()
+        _ = BatteryManager.shared // Start battery monitoring
         Task { await AppDelegate.pipeline.start() }
     }
 

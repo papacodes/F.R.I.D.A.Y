@@ -3,6 +3,7 @@ import SwiftUI
 
 extension Notification.Name {
     static let fridayTrigger = Notification.Name("fridayTrigger")
+    static let fridayDismiss = Notification.Name("fridayDismiss")
 }
 
 // MARK: - Display state
@@ -87,6 +88,7 @@ final class FridayState: ObservableObject {
     @Published var isThinking   = false
     @Published var isSpeaking   = false
     @Published var isError      = false
+    @Published var isDevTaskRunning = false
     @Published var transcript   = ""
     @Published var volume: Float = 0.0
     @Published var modelName    = "Gemini 2.5 Flash"
@@ -97,6 +99,7 @@ final class FridayState: ObservableObject {
     // MARK: Window
     @Published var displayState: NotchDisplayState = .dismissed
     @Published var closedNotchSize: CGSize = CGSize(width: 200, height: 32)
+    @Published var standardWidth: CGFloat = 440
 
     // MARK: Navigation
     @Published var activeTab: NotchTab = .home
@@ -110,6 +113,12 @@ final class FridayState: ObservableObject {
     @Published var albumAccentColor: Color = .cyan
     @Published var playbackPosition: TimeInterval = 0
     @Published var playbackDuration: TimeInterval = 0
+
+    // MARK: System
+    @Published var batteryLevel: Float = 0.0
+    @Published var isCharging: Bool = false
+    @Published var isPluggedIn: Bool = false
+    @Published var isInLowPowerMode: Bool = false
 
     var hasMusicTrack: Bool { isPlayingMusic || isMusicPaused }
 
