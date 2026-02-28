@@ -123,7 +123,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 ),
                 systemInstruction: SystemInstruction(parts: [TextPart(text: instructions)]),
                 tools: [ToolsList(functionDeclarations: [
-                    Self.devTaskTool, Self.weatherTool, Self.timeTool,
+                    Self.devTaskTool, Self.weatherTool, Self.timeTool, Self.batteryTool,
                     Self.mapTool, Self.searchTool, Self.musicTool,
                     Self.playlistTool, Self.notesTool, Self.remindersTool,
                     Self.calendarTool, Self.disconnectTool
@@ -249,6 +249,8 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             result = await WeatherSkill.fetchWeather()
         case "get_time":
             result = "It is currently \(TimeSkill.getCurrentTime()) on \(TimeSkill.getCurrentDate())."
+        case "get_battery_status":
+            result = BatterySkill.getBatteryStatus()
         case "find_nearby_places":
             if let q = call.args["query"] { result = await MapsSkill.findNearby(q) }
         case "web_search":
@@ -391,6 +393,12 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     private static let timeTool = FunctionDecl(
         name: "get_time",
         description: "Get the current date and time.",
+        parameters: FunctionParams(type: "object", properties: [:], required: [])
+    )
+
+    private static let batteryTool = FunctionDecl(
+        name: "get_battery_status",
+        description: "Get the current battery level, charging state, plug status, and whether Low Power Mode is active.",
         parameters: FunctionParams(type: "object", properties: [:], required: [])
     )
 

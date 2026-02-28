@@ -57,6 +57,17 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
         NotificationCenter.default.addObserver(forName: .fridayDismiss, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.dismiss() }
         }
+        NotificationCenter.default.addObserver(forName: .fridayExpand, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.goOpen(silent: true) }
+        }
+
+        // WAKE WORD: "Hey Friday" detected — summon the full panel and wake Gemini
+        NotificationCenter.default.addObserver(forName: .fridayWakeWord, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard FridayState.shared.displayState != .open else { return }
+                self?.goOpen()
+            }
+        }
         
         // HOVER ENTER: Deliberate delay
         NotificationCenter.default.addObserver(forName: NSNotification.Name("notchMouseEntered"), object: nil, queue: .main) { [weak self] _ in
@@ -71,7 +82,6 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
                         Task { @MainActor in
                             if let self = self, self.isMouseInside {
                                 self.goStandard()
-                                self.triggerHaptic()
                             }
                         }
                     }
@@ -82,11 +92,16 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
         // HOVER EXIT
         NotificationCenter.default.addObserver(forName: NSNotification.Name("notchMouseExited"), object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
-                self?.isMouseInside = false
-                self?.intentionalHoverTimer?.invalidate()
-                self?.intentionalHoverTimer = nil
-                
-                self?.startDismissalTimer()
+                guard let self = self else { return }
+                // The tracking area is only 38pt, but the notch grows taller in
+                // standard-active (~70pt) and open (280pt) states. Guard against
+                // false exits when the cursor moves into expanded content below the zone.
+                if self.isCursorOverVisibleNotch { return }
+
+                self.isMouseInside = false
+                self.intentionalHoverTimer?.invalidate()
+                self.intentionalHoverTimer = nil
+                self.startDismissalTimer()
             }
         }
     }
@@ -113,21 +128,20 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
         if state.hasMusicTrack && !state.isMusicPaused {
             if state.displayState == .dismissed {
                 goStandard()
-                triggerHaptic()
             }
             return
         }
         
         // If we are in standard state but no music/AI/mouse is present, handle auto-dismiss
-        if state.displayState == .standard && !state.isActive && !state.hasMusicTrack && !isMouseInside {
+        if state.displayState == .standard && !state.isActive && !state.hasMusicTrack && !isMouseInside && !isCursorOverVisibleNotch {
             let inactiveTime = Date().timeIntervalSince(state.lastActivityTime)
             if inactiveTime > 5.0 {
                 dismiss()
             }
         }
-        
+
         // If music was paused, wait 5s
-        if state.isMusicPaused && state.displayState == .standard && !isMouseInside {
+        if state.isMusicPaused && state.displayState == .standard && !isMouseInside && !isCursorOverVisibleNotch {
             let inactiveTime = Date().timeIntervalSince(state.lastMusicActivity)
             if inactiveTime > 5.0 {
                 dismiss()
@@ -137,8 +151,7 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
     
     private func checkAndDismiss() {
         let state = FridayState.shared
-        // Only dismiss if mouse is actually outside AND nothing else is holding it open
-        if !isMouseInside && !state.isActive && !state.isPlayingMusic {
+        if !isMouseInside && !isCursorOverVisibleNotch && !state.isActive && !state.isPlayingMusic {
             dismiss()
         }
     }
@@ -156,27 +169,65 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
         FridayState.shared.recordActivity()
         withAnimation(.interactiveSpring(response: 0.38, dampingFraction: 0.8)) {
             FridayState.shared.displayState = .standard
+            triggerHaptic()
+        }
+        // If coming from open state, Gemini had the mic — restart wake word after it releases
+        Task {
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            WakeWordEngine.shared.start()
         }
     }
 
-    func goOpen() {
+    func goOpen(silent: Bool = false) {
+        // Stop wake word before Gemini takes the mic
+        WakeWordEngine.shared.stop()
         FridayState.shared.recordActivity()
         triggerHaptic()
         withAnimation(.interactiveSpring(response: 0.38, dampingFraction: 0.8)) {
             FridayState.shared.displayState = .open
         }
-        Task { await AppDelegate.pipeline.wake() }
+        if !silent { Task { await AppDelegate.pipeline.wake() } }
     }
 
     func dismiss() {
         FridayState.shared.recordActivity()
         withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.9)) {
             FridayState.shared.displayState = .dismissed
+            triggerHaptic()
         }
         AppDelegate.pipeline.stop()
+        // Restart wake word after the pipeline releases the mic
+        Task {
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            WakeWordEngine.shared.start()
+        }
     }
 
     // MARK: - Private
+
+    /// Checks whether the real cursor position (screen coordinates) is over the
+    /// visible notch content. This is the ground-truth guard used to catch false
+    /// mouseExited events fired by the narrow 38pt tracking area when the notch
+    /// has grown taller in standard-active or open states.
+    private var isCursorOverVisibleNotch: Bool {
+        let mouse = NSEvent.mouseLocation
+        let frame = panel.frame
+        let state = FridayState.shared
+        let notchH = state.closedNotchSize.height
+        let visibleHeight: CGFloat
+        switch state.displayState {
+        case .dismissed: visibleHeight = notchH
+        case .standard:  visibleHeight = state.isActive ? notchH * 2.2 : notchH
+        case .open:      visibleHeight = NotchSizes.openHeight
+        }
+        let checkRect = NSRect(
+            x: frame.minX,
+            y: frame.maxY - visibleHeight,
+            width: frame.width,
+            height: visibleHeight
+        )
+        return checkRect.contains(mouse)
+    }
 
     private static func notchClosedSize(screen: NSScreen) -> CGSize {
         var width:  CGFloat = 200

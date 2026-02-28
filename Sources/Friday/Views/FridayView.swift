@@ -41,6 +41,14 @@ struct FridayView: View {
         ZStack(alignment: .top) {
             // Pitch Black Background
             Color.black
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    if state.displayState == .open { 
+                        NotificationCenter.default.post(name: .fridayDismiss, object: nil) 
+                    } else {
+                        NotificationCenter.default.post(name: .fridayExpand, object: nil)
+                    }
+                }
                 .frame(width: notchSize.width, height: notchSize.height)
                 .clipShape(
                     NotchShape(

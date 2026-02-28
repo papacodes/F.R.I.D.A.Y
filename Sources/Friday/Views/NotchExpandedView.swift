@@ -5,92 +5,98 @@ struct NotchExpandedView: View {
     @Namespace private var animation
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Header: Pushed down and in significantly to avoid notch curves
-            HStack {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(state.isConnected ? Color.green : Color.red)
-                        .frame(width: 6, height: 6)
-                    Text(state.modelName.uppercased())
-                        .font(.system(size: 9, weight: .black, design: .rounded))
-                        .foregroundColor(.white.opacity(0.35))
-                        .tracking(1)
-                }
-                
-                Spacer()
-                
-                Text(Date(), format: .dateTime.hour().minute())
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .foregroundColor(.white.opacity(0.35))
+        ZStack(alignment: .top) {
+            // Layer 0: Background Glow (Home only)
+            if state.activeTab == .home {
+                Circle()
+                    .fill(Color.cyan.opacity(0.12))
+                    .frame(width: 300, height: 300)
+                    .blur(radius: 60)
+                    .offset(y: 40)
+                    .transition(.opacity)
             }
-            .padding(.horizontal, 44) // Deep horizontal padding for header
-            .padding(.top, 36)        // Pushed down below the physical notch base
-            .frame(height: 50)
 
-            // Main Stage Area
-            ZStack {
-                // Background Glow (Home only)
-                if state.activeTab == .home {
-                    Circle()
-                        .fill(Color.cyan.opacity(0.08))
-                        .frame(width: 250, height: 250)
-                        .blur(radius: 50)
-                        .offset(y: 10)
-                }
-
-                VStack(spacing: 0) {
-                    // HERO SLOT: Constrained to keep everything centered
-                    ZStack {
-                        switch state.activeTab {
-                        case .home:
-                            FridayStatusPanelView(namespace: animation)
-                        case .music:
-                            MusicTabView(namespace: animation)
-                        case .calendar:
-                            CalendarTabView(namespace: animation)
-                        default:
-                            FridayStatusPanelView(namespace: animation)
-                        }
+            // Layer 1: Layout Skeleton (Header and Bottom Pills)
+            VStack(spacing: 0) {
+                // Header
+                HStack(alignment: .center) {
+                    // Left: Model Status
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(state.isConnected ? Color.green : Color.red)
+                            .frame(width: 6, height: 6)
+                        Text(state.modelName.uppercased())
+                            .font(.system(size: 9, weight: .black, design: .rounded))
+                            .foregroundColor(.white.opacity(0.35))
+                            .tracking(1)
                     }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 140) // Fixed height to prevent pushing pills down
-                    .padding(.top, 4)
-
+                    
                     Spacer()
+                    
+                    // Right: Battery & Time
+                    HStack(spacing: 16) {
+                        BatteryIndicator()
+                            .scaleEffect(0.85)
+                        
+                        Text(Date(), format: .dateTime.hour().minute())
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .foregroundColor(.white.opacity(0.35))
+                    }
+                }
+                .padding(.horizontal, 44)
+                .padding(.top, 36)
+                .frame(height: 50)
 
-                    // SIDE PILLS: Pushed in from corners to avoid curvature clipping
-                    HStack(alignment: .bottom, spacing: 20) {
-                        // Left Pill
-                        Group {
-                            if state.activeTab == .home {
-                                if state.hasMusicTrack { MiniMusicPill(namespace: animation) }
-                            } else if state.activeTab == .music {
-                                MiniOrbPill(namespace: animation)
-                            } else {
-                                if state.hasMusicTrack { MiniMusicPill(namespace: animation) }
-                            }
-                        }
-                        
-                        Spacer()
-                        
-                        // Right Pill
-                        Group {
-                            if state.activeTab == .home {
-                                MiniCalendarPill(namespace: animation)
-                            } else if state.activeTab == .music {
-                                MiniCalendarPill(namespace: animation)
-                            } else {
-                                MiniOrbPill(namespace: animation)
-                            }
+                Spacer()
+
+                // Side Pills: Anchored to bottom
+                HStack(alignment: .bottom, spacing: 20) {
+                    Group {
+                        if state.activeTab == .home {
+                            if state.hasMusicTrack { MiniMusicPill(namespace: animation) }
+                        } else if state.activeTab == .music {
+                            MiniOrbPill(namespace: animation)
+                        } else {
+                            if state.hasMusicTrack { MiniMusicPill(namespace: animation) }
                         }
                     }
-                    .padding(.horizontal, 48) // Very safe horizontal padding
-                    .padding(.bottom, 36)     // Pushed up from the bottom edge
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    
+                    Spacer()
+                    
+                    Group {
+                        if state.activeTab == .home {
+                            MiniCalendarPill(namespace: animation)
+                        } else if state.activeTab == .music {
+                            MiniCalendarPill(namespace: animation)
+                        } else {
+                            MiniOrbPill(namespace: animation)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                .padding(.horizontal, 48)
+                .padding(.bottom, 36)
+            }
+
+            // Layer 2: Main Hero Component
+            ZStack {
+                switch state.activeTab {
+                case .home:
+                    FridayStatusPanelView(namespace: animation)
+                case .music:
+                    MusicTabView(namespace: animation)
+                case .calendar:
+                    CalendarTabView(namespace: animation)
+                default:
+                    FridayStatusPanelView(namespace: animation)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(width: 660, height: 280)
+            .offset(y: 20)
+            .zIndex(1)
         }
         .frame(width: 660, height: 280)
+        .animation(.spring(response: 0.5, dampingFraction: 0.85), value: state.activeTab)
     }
 }

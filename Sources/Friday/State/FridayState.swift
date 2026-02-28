@@ -2,8 +2,10 @@ import Foundation
 import SwiftUI
 
 extension Notification.Name {
-    static let fridayTrigger = Notification.Name("fridayTrigger")
-    static let fridayDismiss = Notification.Name("fridayDismiss")
+    static let fridayTrigger  = Notification.Name("fridayTrigger")
+    static let fridayDismiss  = Notification.Name("fridayDismiss")
+    static let fridayExpand   = Notification.Name("fridayExpand")
+    static let fridayWakeWord = Notification.Name("fridayWakeWord")
 }
 
 // MARK: - Display state

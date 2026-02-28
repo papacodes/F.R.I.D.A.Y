@@ -69,7 +69,7 @@ class BatteryManager: ObservableObject {
         }
         
         // Low Power Mode
-        state.isInLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+        let lpm = ProcessInfo.processInfo.isLowPowerModeEnabled; if state.isInLowPowerMode != lpm { state.isInLowPowerMode = lpm; if lpm { state.addActivity(type: .info, title: "Low Power Mode", subtitle: "Conserving energy") } }
     }
     
     deinit {
