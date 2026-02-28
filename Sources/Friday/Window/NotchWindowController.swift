@@ -164,7 +164,7 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
 
     func toggle() {
         switch FridayState.shared.displayState {
-        case .dismissed, .standard: goOpen()
+        case .dismissed, .standard, .alert: goOpen()
         case .open:                 goStandard()
         }
     }
@@ -222,7 +222,8 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
         let visibleHeight: CGFloat
         switch state.displayState {
         case .dismissed: visibleHeight = notchH
-        case .standard:  visibleHeight = state.isActive ? notchH * 2.2 : notchH
+        case .alert:     return true
+        case .standard: visibleHeight = state.isActive ? notchH * 2.2 : notchH
         case .open:      visibleHeight = NotchSizes.openHeight
         }
         let checkRect = NSRect(

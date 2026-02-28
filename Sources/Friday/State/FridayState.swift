@@ -57,6 +57,7 @@ struct SystemAlert: Identifiable, Equatable {
 // MARK: - Display state
 
 enum NotchDisplayState: Equatable {
+    case alert       // System Notification (Volume, Brightness, etc.)
     case dismissed   // Physical notch only
     case standard    // Horizontal expansion
     case open        // Full vertical expansion
@@ -147,6 +148,7 @@ final class FridayState: ObservableObject {
 
     // MARK: Alerts
     @Published var activeAlert: SystemAlert? = nil
+    private var preAlertState: NotchDisplayState = .dismissed
     private var alertTimer: Timer?
     /// true when postAlert was the reason the notch transitioned dismissed→standard.
     /// Only auto-dismiss on alert expiry when this is true.
@@ -180,39 +182,8 @@ final class FridayState: ObservableObject {
         if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
     }
 
-    func postAlert(_ alert: SystemAlert) {
-        alertTimer?.invalidate()
-        // Record activity so the 5-second inactivity check in NotchWindowController
-        // doesn't race with the alert's own dismiss timer.
-        recordActivity()
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-            self.activeAlert = alert
-            if self.displayState == .dismissed {
-                self.displayState = .standard
-                self.alertForcedStandard = true
-            }
-            // If already in standard/open — don't mark forced; don't auto-dismiss on expiry
-        }
-        alertTimer = Timer.scheduledTimer(withTimeInterval: alert.duration, repeats: false) { _ in
-            Task { @MainActor in
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                    self.activeAlert = nil
-                }
-                // Only auto-dismiss if the alert is the reason the notch opened,
-                // and nothing else is keeping it visible.
-                let shouldDismiss = self.alertForcedStandard
-                    && !self.hasMusicTrack
-                    && !self.isActive
-                    && self.displayState == .standard
-                self.alertForcedStandard = false
-                if shouldDismiss {
-                    NotificationCenter.default.post(name: .fridayDismiss, object: nil)
-                }
-            }
-        }
-    }
-
     func recordActivity() { lastActivityTime = Date(); lastMusicActivity = Date() }
+
     func addActivity(type: ActivityItem.ActivityType, title: String, subtitle: String? = nil) {
         let item = ActivityItem(type: type, title: title, subtitle: subtitle)
         withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
@@ -220,4 +191,24 @@ final class FridayState: ObservableObject {
             if activityFeed.count > 10 { activityFeed.removeLast() }
         }
     }
+
+    func postAlert(_ alert: SystemAlert) {
+        alertTimer?.invalidate()
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+            if self.displayState != .alert { self.preAlertState = self.displayState }
+            self.activeAlert = alert
+            self.displayState = .alert
+        }
+        alertTimer = Timer.scheduledTimer(withTimeInterval: alert.duration, repeats: false) { _ in
+            Task { @MainActor in
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                    self.activeAlert = nil
+                    self.displayState = self.preAlertState
+                }
+            }
+        }
+    }
+
+
 }
+

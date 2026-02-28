@@ -18,8 +18,8 @@ struct FridayView: View {
         let h = state.closedNotchSize.height
         switch state.displayState {
         case .dismissed: return state.closedNotchSize
+        case .alert:     return CGSize(width: 440, height: h)
         case .standard:  
-            // If active (speaking/listening), grow downward. If idle, stay inside notch height.
             let targetHeight = state.isActive ? h * 2.2 : h
             return CGSize(width: state.standardWidth, height: targetHeight)
         case .open:      
@@ -94,22 +94,19 @@ struct FridayView: View {
                 )
                 .transition(.opacity)
 
+        case .alert:
+            AlertNotchView()
+                .frame(width: 440, height: notchH)
+                .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .top)))
+
         case .standard:
-            if let alert = state.activeAlert {
-                // Transient system alert — dynamic island style, always notch height
-                AlertNotchView(alert: alert)
-                    .frame(width: state.standardWidth, height: notchH)
-                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
-                    .id(alert.id) // force view replacement when alert type changes
-            } else {
-                HorizontalNotchView()
-                    .padding(.top, state.isActive ? notchH : 0)
-                    .frame(
-                        width:  state.standardWidth,
-                        height: state.isActive ? notchH * 2.2 : notchH
-                    )
-                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
-            }
+            HorizontalNotchView()
+                .padding(.top, state.isActive ? notchH : 0)
+                .frame(
+                    width:  state.standardWidth,
+                    height: state.isActive ? notchH * 2.2 : notchH
+                )
+                .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
 
         case .open:
             NotchExpandedView()
