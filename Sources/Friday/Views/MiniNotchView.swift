@@ -24,11 +24,23 @@ struct MiniNotchView: View {
     @ViewBuilder
     private var leftSection: some View {
         if let alert = state.activeAlert {
-            Image(systemName: alert.icon)
-                .font(.system(size: 13, weight: .black))
-                .foregroundColor(alert.color)
-                .transition(.opacity.combined(with: .scale))
-        } else {
+            if alert.id == "friday" {
+                MiniOrbView(
+                    isActive: state.isActive,
+                    isError: state.isError,
+                    isDevTask: state.isDevTaskRunning,
+                    isConnected: state.isConnected
+                )
+                .scaleEffect(0.8)
+                .transition(.opacity)
+            } else {
+                Image(systemName: alert.icon)
+                    .font(.system(size: 13, weight: .black))
+                    .foregroundColor(alert.color)
+                    .transition(.opacity.combined(with: .scale))
+            }
+        } else if state.isHovering {
+            // Hover-triggered presence
             MiniOrbView(
                 isActive: state.isActive,
                 isError: state.isError,
@@ -37,18 +49,27 @@ struct MiniNotchView: View {
             )
             .scaleEffect(0.8)
             .transition(.opacity)
+        } else {
+            // Dormant / No Alert: Minimal indicator if needed, but per rules, should be empty
+            EmptyView()
         }
     }
 
     @ViewBuilder
     private var rightSection: some View {
         if let alert = state.activeAlert {
-            alertIndicator(alert)
-                .transition(.opacity.combined(with: .scale))
-        } else {
-            // Default mini state shows battery ring or volume bar if active
+            if alert.id == "friday" {
+                CompactBatteryRing()
+                    .transition(.opacity)
+            } else {
+                alertIndicator(alert)
+                    .transition(.opacity.combined(with: .scale))
+            }
+        } else if state.isHovering {
             CompactBatteryRing()
                 .transition(.opacity)
+        } else {
+            EmptyView()
         }
     }
 

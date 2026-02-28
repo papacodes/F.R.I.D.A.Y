@@ -46,13 +46,7 @@ final class NotchUIEngine: NSObject, NSWindowDelegate {
         // Initial "Ready" sequence
         Task {
             try? await Task.sleep(nanoseconds: 800_000_000)
-            // Show the mini view briefly as a "system ready" signal
-            withAnimation(.spring()) {
-                FridayState.shared.displayState = .mini
-            }
-            // Ensure no sticky user flags are set
-            FridayState.shared.isUserInitiatedExpansion = false
-            // Natural dismissal timer in FridayState will take it back to .dismissed after 3s
+            FridayState.shared.postAlert(SystemAlert.friday(duration: 3.5))
         }
     }
     
@@ -92,10 +86,12 @@ final class NotchUIEngine: NSObject, NSWindowDelegate {
                 self?.dismissalTimer = nil
 
                 let state = FridayState.shared
+                state.isHovering = true
                 
                 // Wake Engine starts ONLY when hovering over the idle notch
                 if state.displayState == .dismissed || state.displayState == .mini {
                     WakeWordEngine.shared.start()
+                    withAnimation { state.displayState = .mini }
                 }
 
                 if state.displayState == .dismissed {
@@ -122,6 +118,9 @@ final class NotchUIEngine: NSObject, NSWindowDelegate {
                 self.isMouseInside = false
                 self.intentionalHoverTimer?.invalidate()
                 self.intentionalHoverTimer = nil
+                
+                let state = FridayState.shared
+                state.isHovering = false
                 
                 // Wake Engine stops when hover ends
                 WakeWordEngine.shared.stop()

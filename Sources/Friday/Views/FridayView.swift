@@ -44,42 +44,42 @@ struct FridayView: View {
 
     // MARK: - Body
 
-    var body: some View {
+        var body: some View {
         ZStack(alignment: .top) {
-            // Pitch Black Background
-            Color.black
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    // State-aware cycle: dismissed/mini → miniExpanded → open → miniExpanded
-                    NotificationCenter.default.post(name: .fridayToggle, object: nil)
-                }
-                .frame(width: notchSize.width, height: notchSize.height)
-                .clipShape(
-                    NotchShape(
-                        topCornerRadius: topCornerRadius,
-                        bottomCornerRadius: bottomCornerRadius
-                    )
+            // Main Notch Container
+            ZStack(alignment: .top) {
+                Color.black
+                
+                notchContent
+                    .animation(spring, value: state.displayState)
+                    .animation(spring, value: state.isActive)
+            }
+            .frame(width: notchSize.width, height: notchSize.height)
+            .clipShape(
+                NotchShape(
+                    topCornerRadius: topCornerRadius,
+                    bottomCornerRadius: bottomCornerRadius
                 )
-                .overlay(
-                    NotchShape(
-                        topCornerRadius: topCornerRadius,
-                        bottomCornerRadius: bottomCornerRadius
-                    )
-                    .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+            )
+            .overlay(
+                NotchShape(
+                    topCornerRadius: topCornerRadius,
+                    bottomCornerRadius: bottomCornerRadius
                 )
-                .shadow(color: .black.opacity(state.displayState == .dismissed ? 0 : (state.displayState == .mini ? 0.3 : 0.6)), radius: 40, x: 0, y: 20)
-                .animation(spring, value: state.displayState)
-                .animation(spring, value: state.isActive)
-                .animation(spring, value: state.hasMusicTrack)
-                .animation(spring, value: state.standardWidth)
-
-            // Content
-            notchContent
-                .animation(spring, value: state.displayState)
-                .animation(spring, value: state.isActive)
+                .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+            )
+            .contentShape(Rectangle())
+            .onTapGesture {
+                NotificationCenter.default.post(name: .fridayToggle, object: nil)
+            }
+            .shadow(color: .black.opacity(state.displayState == .dismissed ? 0 : (state.displayState == .mini ? 0.3 : 0.6)), radius: 40, x: 0, y: 20)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .ignoresSafeArea()
+        .animation(spring, value: state.displayState)
+        .animation(spring, value: state.isActive)
+        .animation(spring, value: state.hasMusicTrack)
+        .animation(spring, value: state.standardWidth)
         .preferredColorScheme(.dark)
     }
 
@@ -89,46 +89,50 @@ struct FridayView: View {
     private var notchContent: some View {
         let notchH = state.closedNotchSize.height
 
-        switch state.displayState {
-
-        case .dismissed:
-            NotchIdleIndicator()
-                .frame(width: state.closedNotchSize.width, height: notchH)
-                .transition(.opacity)
-
-        case .mini:
+        // Always show the expanded content if an alert is active (even during contraction to dismissed)
+        if state.activeAlert != nil && state.displayState != .open {
             MiniNotchView()
-                .frame(width: 440, height: notchH)
-                .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .top)))
+                .frame(width: notchSize.width, height: notchH)
+        } else {
+            switch state.displayState {
+            case .dismissed:
+                NotchIdleIndicator()
+                    .frame(width: state.closedNotchSize.width, height: notchH)
+                    .transition(.opacity)
 
-        case .miniExpanded:
-            // Interactive alert overlays the pill content
-            if state.activeAlert != nil {
-                AlertNotchView()
+            case .mini:
+                MiniNotchView()
                     .frame(width: 440, height: notchH)
-                    .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .top)))
-            } else {
-                HorizontalNotchView()
-                    .padding(.top, state.isActive || state.hasMusicTrack ? notchH : 0)
-                    .frame(
-                        width:  state.standardWidth,
-                        height: state.isActive || state.hasMusicTrack ? notchH * 2.2 : notchH
-                    )
-                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
-            }
+                    .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .top)))
 
-        case .open:
-            NotchExpandedView()
-                .frame(
-                    width:  NotchSizes.openWidth,
-                    height: NotchSizes.openHeight
-                )
-                .transition(
-                    .asymmetric(
-                        insertion: .opacity.combined(with: .scale(scale: 0.97, anchor: .top)),
-                        removal:   .opacity
+            case .miniExpanded:
+                if state.activeAlert != nil {
+                    AlertNotchView()
+                        .frame(width: 440, height: notchH)
+                        .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .top)))
+                } else {
+                    HorizontalNotchView()
+                        .padding(.top, state.isActive || state.hasMusicTrack ? notchH : 0)
+                        .frame(
+                            width:  state.standardWidth,
+                            height: state.isActive || state.hasMusicTrack ? notchH * 2.2 : notchH
+                        )
+                        .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
+                }
+
+            case .open:
+                NotchExpandedView()
+                    .frame(
+                        width:  NotchSizes.openWidth,
+                        height: NotchSizes.openHeight
                     )
-                )
+                    .transition(
+                        .asymmetric(
+                            insertion: .opacity.combined(with: .scale(scale: 0.97, anchor: .top)),
+                            removal:   .opacity
+                        )
+                    )
+            }
         }
     }
 }
