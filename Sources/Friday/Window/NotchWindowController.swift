@@ -81,12 +81,18 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
                 self?.dismissalTimer = nil
 
                 let state = FridayState.shared
+                
+                // Wake Engine starts ONLY when hovering over the idle notch
+                if state.displayState == .dismissed || state.displayState == .mini {
+                    WakeWordEngine.shared.start()
+                }
+
                 if state.displayState == .dismissed {
                     self?.intentionalHoverTimer?.invalidate()
                     self?.intentionalHoverTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { _ in
                         Task { @MainActor in
                             if let self = self, self.isMouseInside {
-                                self.goMini()  // hover → mini pill only, wake engine stays active
+                                self.goMini()  // hover → mini pill only
                             }
                         }
                     }
@@ -105,6 +111,10 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
                 self.isMouseInside = false
                 self.intentionalHoverTimer?.invalidate()
                 self.intentionalHoverTimer = nil
+                
+                // Wake Engine stops when hover ends
+                WakeWordEngine.shared.stop()
+                
                 self.startDismissalTimer()
             }
         }
@@ -215,11 +225,6 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
         }
         AppDelegate.pipeline.stop()
         WakeWordEngine.shared.stop()
-        // Let the pipeline release the mic, then restart wake engine so "Hey Friday" works again
-        Task {
-            try? await Task.sleep(nanoseconds: 800_000_000)
-            WakeWordEngine.shared.start()
-        }
     }
 
     // MARK: - Private

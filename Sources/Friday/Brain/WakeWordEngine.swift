@@ -53,7 +53,7 @@ final class WakeWordEngine {
             return
         }
         isRunning = true
-        FridayState.shared.addActivity(type: .info, title: "Wake Word Active", subtitle: "Say \"Hey Friday\" to summon")
+
         beginSession()
     }
 
