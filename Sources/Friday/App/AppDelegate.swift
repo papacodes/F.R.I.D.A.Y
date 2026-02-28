@@ -29,8 +29,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         MediaRemoteManager.shared.start()
-        _ = BatteryManager.shared // Start battery monitoring
-        WakeWordEngine.shared.requestPermissionAndStart()
+        _ = BatteryManager.shared
+        SystemNotificationManager.shared.start() // Start battery monitoring
+        WakeWordEngine.shared.requestPermission()
     }
 
     private func requestAccessibilityAndWait() {

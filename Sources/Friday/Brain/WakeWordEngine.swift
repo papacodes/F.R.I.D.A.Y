@@ -27,22 +27,12 @@ final class WakeWordEngine {
 
     // MARK: - Public
 
-    func requestPermissionAndStart() {
-        // TCC delivers this callback on an XPC background thread, not the main thread.
-        // Typing it explicitly as @Sendable prevents Swift 6 from injecting a @MainActor
-        // isolation check that would crash when called from that thread.
-        let callback: @Sendable (SFSpeechRecognizerAuthorizationStatus) -> Void = { [weak self] status in
-            Task { @MainActor [weak self] in
-                switch status {
-                case .authorized:
-                    self?.start()
-                case .denied, .restricted:
-                    print("[WakeWord] Speech recognition not authorized — hotkey still works")
-                case .notDetermined:
-                    break
-                @unknown default:
-                    break
-                }
+    /// Request speech recognition permission early so the dialog doesn't appear
+    /// mid-hover. Does NOT start listening — that happens on goStandard().
+    func requestPermission() {
+        let callback: @Sendable (SFSpeechRecognizerAuthorizationStatus) -> Void = { status in
+            if status == .denied || status == .restricted {
+                print("[WakeWord] Speech recognition not authorized — hotkey still works")
             }
         }
         SFSpeechRecognizer.requestAuthorization(callback)

@@ -75,8 +75,9 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
                 self?.isMouseInside = true
                 self?.dismissalTimer?.invalidate()
                 self?.dismissalTimer = nil
-                
-                if FridayState.shared.displayState == .dismissed {
+
+                let state = FridayState.shared
+                if state.displayState == .dismissed {
                     self?.intentionalHoverTimer?.invalidate()
                     self?.intentionalHoverTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { _ in
                         Task { @MainActor in
@@ -85,6 +86,9 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
                             }
                         }
                     }
+                } else if state.displayState == .standard && state.hasMusicTrack {
+                    // Music is playing — haptic pulse so the user knows the bar is interactive
+                    self?.triggerHaptic()
                 }
             }
         }
@@ -166,14 +170,17 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
     }
 
     func goStandard() {
+        // Capture before animation mutates the state
+        let fromOpen = FridayState.shared.displayState == .open
         FridayState.shared.recordActivity()
         withAnimation(.interactiveSpring(response: 0.38, dampingFraction: 0.8)) {
             FridayState.shared.displayState = .standard
             triggerHaptic()
         }
-        // If coming from open state, Gemini had the mic — restart wake word after it releases
+        // Notch is visible — start listening for the wake word.
+        // If coming from open, give AudioProcessor a moment to release the mic first.
         Task {
-            try? await Task.sleep(nanoseconds: 600_000_000)
+            if fromOpen { try? await Task.sleep(nanoseconds: 600_000_000) }
             WakeWordEngine.shared.start()
         }
     }
@@ -196,11 +203,9 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
             triggerHaptic()
         }
         AppDelegate.pipeline.stop()
-        // Restart wake word after the pipeline releases the mic
-        Task {
-            try? await Task.sleep(nanoseconds: 600_000_000)
-            WakeWordEngine.shared.start()
-        }
+        // Mic is no longer needed — stop wake word. It restarts next time the notch
+        // enters standard state (on hover).
+        WakeWordEngine.shared.stop()
     }
 
     // MARK: - Private

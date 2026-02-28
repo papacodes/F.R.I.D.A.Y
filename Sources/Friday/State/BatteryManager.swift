@@ -7,9 +7,12 @@ import SwiftUI
 @MainActor
 class BatteryManager: ObservableObject {
     static let shared = BatteryManager()
-    
-    private var powerSourceChangedCallback: IOPowerSourceCallbackType?
+
     nonisolated(unsafe) private var runLoopSource: CFRunLoopSource?
+
+    // Track previous state to detect actual changes and post alerts
+    private var prevIsCharging: Bool? = nil
+    private var prevIsPluggedIn: Bool? = nil
 
     private init() {
         startMonitoring()
@@ -58,18 +61,31 @@ class BatteryManager: ObservableObject {
             }
         }
         
-        // Charging
+        // Charging — alert on change
         if let isCharging = description["Is Charging"] as? Bool {
+            if let prev = prevIsCharging, prev != isCharging {
+                state.postAlert(.battery(Int(state.batteryLevel), charging: isCharging))
+            }
+            prevIsCharging = isCharging
             state.isCharging = isCharging
         }
-        
-        // Plugged In
+
+        // Plugged In — alert on change (only if charging state didn't already fire)
         if let powerSourceState = description[kIOPSPowerSourceStateKey] as? String {
-            state.isPluggedIn = (powerSourceState == kIOPSACPowerValue)
+            let isPluggedIn = (powerSourceState == kIOPSACPowerValue)
+            if let prev = prevIsPluggedIn, prev != isPluggedIn, prevIsCharging == state.isCharging {
+                state.postAlert(.battery(Int(state.batteryLevel), charging: state.isCharging))
+            }
+            prevIsPluggedIn = isPluggedIn
+            state.isPluggedIn = isPluggedIn
         }
-        
+
         // Low Power Mode
-        let lpm = ProcessInfo.processInfo.isLowPowerModeEnabled; if state.isInLowPowerMode != lpm { state.isInLowPowerMode = lpm; if lpm { state.addActivity(type: .info, title: "Low Power Mode", subtitle: "Conserving energy") } }
+        let lpm = ProcessInfo.processInfo.isLowPowerModeEnabled
+        if state.isInLowPowerMode != lpm {
+            state.isInLowPowerMode = lpm
+            if lpm { state.postAlert(.battery(Int(state.batteryLevel), charging: state.isCharging)) }
+        }
     }
     
     deinit {

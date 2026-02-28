@@ -95,14 +95,21 @@ struct FridayView: View {
                 .transition(.opacity)
 
         case .standard:
-            HorizontalNotchView()
-                // Only push content down if we are in the "Active" (tall) state
-                .padding(.top, state.isActive ? notchH : 0)
-                .frame(
-                    width:  state.standardWidth,
-                    height: state.isActive ? notchH * 2.2 : notchH
-                )
-                .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
+            if let alert = state.activeAlert {
+                // Transient system alert — dynamic island style, always notch height
+                AlertNotchView(alert: alert)
+                    .frame(width: state.standardWidth, height: notchH)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
+                    .id(alert.id) // force view replacement when alert type changes
+            } else {
+                HorizontalNotchView()
+                    .padding(.top, state.isActive ? notchH : 0)
+                    .frame(
+                        width:  state.standardWidth,
+                        height: state.isActive ? notchH * 2.2 : notchH
+                    )
+                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
+            }
 
         case .open:
             NotchExpandedView()

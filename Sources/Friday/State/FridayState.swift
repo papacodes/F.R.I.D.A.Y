@@ -8,12 +8,58 @@ extension Notification.Name {
     static let fridayWakeWord = Notification.Name("fridayWakeWord")
 }
 
+// MARK: - Alert System
+
+struct SystemAlert: Identifiable, Equatable {
+
+    enum RightStyle: Equatable {
+        case bar       // Horizontal fill bar — volume, brightness
+        case ring      // Circular progress — AirPods battery
+        case battery   // Battery shape with fill — charging / battery level
+    }
+
+    /// Stable type key — same alert type reuses the same id so SwiftUI updates
+    /// the existing view in-place (animates the slider) rather than recreating it.
+    let id: String
+    let icon: String
+    let value: Float         // 0.0 – 1.0, drives every right-side visual
+    let color: Color
+    let duration: TimeInterval
+    let style: RightStyle
+    let isCharging: Bool
+
+    static func volume(_ level: Float) -> SystemAlert {
+        SystemAlert(id: "volume",
+                    icon: level <= 0 ? "speaker.slash.fill" : "speaker.wave.2.fill",
+                    value: level, color: .white, duration: 2.0, style: .bar, isCharging: false)
+    }
+
+    static func brightness(_ level: Float) -> SystemAlert {
+        SystemAlert(id: "brightness", icon: "sun.max.fill",
+                    value: level, color: .white, duration: 2.0, style: .bar, isCharging: false)
+    }
+
+    static func battery(_ level: Int, charging: Bool) -> SystemAlert {
+        let color: Color = charging ? .green : (level <= 20 ? .orange : .white)
+        return SystemAlert(id: "battery",
+                           icon: charging ? "bolt.fill" : "battery.100",
+                           value: Float(level) / 100.0, color: color,
+                           duration: 3.0, style: .battery, isCharging: charging)
+    }
+
+    static func airpods(name: String, level: Int) -> SystemAlert {
+        SystemAlert(id: "airpods", icon: "airpodspro",
+                    value: Float(level) / 100.0, color: .white,
+                    duration: 4.0, style: .ring, isCharging: false)
+    }
+}
+
 // MARK: - Display state
 
 enum NotchDisplayState: Equatable {
-    case dismissed   // Physical notch only — nothing visible
-    case standard    // Horizontal expansion — alive indicator / music bar
-    case open        // Full vertical expansion — interactive UI
+    case dismissed   // Physical notch only
+    case standard    // Horizontal expansion
+    case open        // Full vertical expansion
 }
 
 // MARK: - Activity Item
@@ -27,7 +73,6 @@ struct ActivityItem: Identifiable, Equatable {
 
     enum ActivityType {
         case toolCall, done, info, warning, error
-
         var icon: String {
             switch self {
             case .toolCall: return "hammer.fill"
@@ -37,7 +82,6 @@ struct ActivityItem: Identifiable, Equatable {
             case .error:    return "xmark.octagon.fill"
             }
         }
-
         var color: Color {
             switch self {
             case .toolCall: return .blue
@@ -54,9 +98,7 @@ struct ActivityItem: Identifiable, Equatable {
 
 enum NotchTab: CaseIterable, Identifiable {
     case home, music, calendar, reminders, notes
-
     var id: Self { self }
-
     var icon: String {
         switch self {
         case .home:      return "sparkle"
@@ -66,7 +108,6 @@ enum NotchTab: CaseIterable, Identifiable {
         case .notes:     return "note.text"
         }
     }
-
     var label: String {
         switch self {
         case .home:      return "Home"
@@ -104,6 +145,13 @@ final class FridayState: ObservableObject {
     @Published var closedNotchSize: CGSize = CGSize(width: 200, height: 32)
     @Published var standardWidth: CGFloat = 440
 
+    // MARK: Alerts
+    @Published var activeAlert: SystemAlert? = nil
+    private var alertTimer: Timer?
+    /// true when postAlert was the reason the notch transitioned dismissed→standard.
+    /// Only auto-dismiss on alert expiry when this is true.
+    private var alertForcedStandard = false
+
     // MARK: Navigation
     @Published var activeTab: NotchTab = .home
 
@@ -125,20 +173,46 @@ final class FridayState: ObservableObject {
     @Published var lastMusicActivity: Date = Date()
 
     var hasMusicTrack: Bool { isPlayingMusic || isMusicPaused }
-
-    // MARK: Helpers
     var isActive: Bool { isListening || isThinking || isSpeaking }
-
-    // Legacy — kept so GeminiVoicePipeline doesn't need touching
     var isExpanded: Bool { displayState == .open }
-    var showInfoCard: Bool = false
 
     func update<T: Equatable>(_ keyPath: ReferenceWritableKeyPath<FridayState, T>, to value: T) {
         if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
     }
 
+    func postAlert(_ alert: SystemAlert) {
+        alertTimer?.invalidate()
+        // Record activity so the 5-second inactivity check in NotchWindowController
+        // doesn't race with the alert's own dismiss timer.
+        recordActivity()
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+            self.activeAlert = alert
+            if self.displayState == .dismissed {
+                self.displayState = .standard
+                self.alertForcedStandard = true
+            }
+            // If already in standard/open — don't mark forced; don't auto-dismiss on expiry
+        }
+        alertTimer = Timer.scheduledTimer(withTimeInterval: alert.duration, repeats: false) { _ in
+            Task { @MainActor in
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                    self.activeAlert = nil
+                }
+                // Only auto-dismiss if the alert is the reason the notch opened,
+                // and nothing else is keeping it visible.
+                let shouldDismiss = self.alertForcedStandard
+                    && !self.hasMusicTrack
+                    && !self.isActive
+                    && self.displayState == .standard
+                self.alertForcedStandard = false
+                if shouldDismiss {
+                    NotificationCenter.default.post(name: .fridayDismiss, object: nil)
+                }
+            }
+        }
+    }
+
     func recordActivity() { lastActivityTime = Date(); lastMusicActivity = Date() }
-    
     func addActivity(type: ActivityItem.ActivityType, title: String, subtitle: String? = nil) {
         let item = ActivityItem(type: type, title: title, subtitle: subtitle)
         withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {

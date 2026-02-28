@@ -75,11 +75,14 @@ class NotchContentView: NSView {
         trackingArea = area
     }
 
-    override func mouseEntered(with event: NSEvent) {
+    // nonisolated: macOS 26 AppKit annotates these as @MainActor but dispatches them
+    // through a path that doesn't satisfy the Swift 6 executor check at call time.
+    // NotificationCenter.default.post is thread-safe; observers use queue: .main.
+    override nonisolated func mouseEntered(with event: NSEvent) {
         NotificationCenter.default.post(name: NSNotification.Name("notchMouseEntered"), object: nil)
     }
-    
-    override func mouseExited(with event: NSEvent) {
+
+    override nonisolated func mouseExited(with event: NSEvent) {
         NotificationCenter.default.post(name: NSNotification.Name("notchMouseExited"), object: nil)
     }
 }
