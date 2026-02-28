@@ -91,7 +91,7 @@ final class MediaRemoteManager {
                 s.nowPlayingArtist = parts[1]
                 s.isPlayingMusic   = parts.count > 2 && parts[2] == "playing"
                 s.isMusicPaused    = parts.count > 2 && parts[2] == "paused"
-                s.recordActivity()
+                
                 if s.albumArt == nil { fetchAppleMusicArtwork() }
             }
         }
@@ -165,7 +165,7 @@ final class MediaRemoteManager {
         s.playbackDuration = duration
         s.playbackPosition = elapsed
 
-        if isPlaying { s.recordActivity() }
+        if isPlaying {  }
 
         if title != lastTrackTitle {
             lastTrackTitle = title

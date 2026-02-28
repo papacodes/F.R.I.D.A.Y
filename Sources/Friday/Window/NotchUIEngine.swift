@@ -91,7 +91,10 @@ final class NotchUIEngine: NSObject, NSWindowDelegate {
                 // Wake Engine starts ONLY when hovering over the idle notch
                 if state.displayState == .dismissed || state.displayState == .mini {
                     WakeWordEngine.shared.start()
-                    withAnimation { state.displayState = .mini }
+                    // If an alert is active, expand to show details (name, value, etc)
+                    withAnimation(.interactiveSpring(response: 0.4, dampingFraction: 0.8)) {
+                        state.displayState = state.activeAlert != nil ? .miniExpanded : .mini
+                    }
                 }
 
                 if state.displayState == .dismissed {
@@ -113,8 +116,8 @@ final class NotchUIEngine: NSObject, NSWindowDelegate {
         NotificationCenter.default.addObserver(forName: NSNotification.Name("notchMouseExited"), object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self else { return }
-                if self.isCursorOverVisibleNotch { return }
-
+                
+                // Clear state immediately
                 self.isMouseInside = false
                 self.intentionalHoverTimer?.invalidate()
                 self.intentionalHoverTimer = nil
@@ -122,10 +125,14 @@ final class NotchUIEngine: NSObject, NSWindowDelegate {
                 let state = FridayState.shared
                 state.isHovering = false
                 
-                // Wake Engine stops when hover ends
+                // Wake Engine stops IMMEDIATELY when hover ends
                 WakeWordEngine.shared.stop()
                 
+                // Start the 3s countdown to dormancy
                 self.startDismissalTimer()
+                
+                // Optional: trigger subtle haptic on exit if user wants it
+                // self.triggerHaptic()
             }
         }
     }
@@ -146,14 +153,20 @@ final class NotchUIEngine: NSObject, NSWindowDelegate {
     
     private func checkAndDismiss() {
         let state = FridayState.shared
+        // If we are currently hovering, dont dismiss yet.
+        if isMouseInside { return }
+        
         withAnimation(.interactiveSpring(response: 0.8, dampingFraction: 0.9)) {
             if state.isUserInitiatedExpansion {
-                // Do nothing — wait for explicit dismiss
+                // Do nothing — wait for explicit user action
             } else if state.isActive || state.isDevTaskRunning {
                 state.displayState = .miniExpanded
-            } else if state.hasMusicTrack || isMouseInside {
+            } else if state.hasMusicTrack {
                 state.displayState = .mini
+            } else if state.activeAlert != nil {
+                // Alert is visible - wait for its own timer to handle it
             } else {
+                // Back to physical notch
                 state.displayState = .dismissed
             }
         }
@@ -247,16 +260,29 @@ final class NotchUIEngine: NSObject, NSWindowDelegate {
         let frame = panel.frame
         let state = FridayState.shared
         let notchH = state.closedNotchSize.height
+        
+        let visibleWidth: CGFloat
         let visibleHeight: CGFloat
+        
         switch state.displayState {
-        case .dismissed, .mini: visibleHeight = notchH
-        case .miniExpanded:     visibleHeight = state.isActive || state.hasMusicTrack ? notchH * 2.2 : notchH
-        case .open:             visibleHeight = NotchSizes.openHeight
+        case .dismissed: 
+            visibleWidth = state.closedNotchSize.width
+            visibleHeight = notchH
+        case .mini: 
+            visibleWidth = 440
+            visibleHeight = notchH + 2
+        case .miniExpanded: 
+            visibleWidth = state.activeAlert != nil ? 440 : state.standardWidth
+            visibleHeight = state.isActive || state.hasMusicTrack ? notchH * 2.2 : notchH
+        case .open: 
+            visibleWidth = NotchSizes.openWidth
+            visibleHeight = NotchSizes.openHeight
         }
+        
         let checkRect = NSRect(
-            x: frame.minX,
+            x: frame.midX - (visibleWidth / 2),
             y: frame.maxY - visibleHeight,
-            width: frame.width,
+            width: visibleWidth,
             height: visibleHeight
         )
         return checkRect.contains(mouse)

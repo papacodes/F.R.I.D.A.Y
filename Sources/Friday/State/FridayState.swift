@@ -141,6 +141,17 @@ final class FridayState: ObservableObject {
     @Published var displayState: NotchDisplayState = .dismissed {
         didSet {
             guard displayState != oldValue else { return }
+            print("[State] displayState: \(oldValue) -> \(displayState)") 
+            
+            if (displayState == .mini || displayState == .miniExpanded) && !isUserInitiatedExpansion {
+                let hasReason = activeAlert != nil || isHovering || isPlayingMusic || isActive
+                if !hasReason {
+                    print("[State] Blocked empty transition. Reverting to dismissed.")
+                    displayState = .dismissed
+                    return
+                }
+            }
+
             if displayState != .open { isUserInitiatedExpansion = false }
             if displayState == .dismissed { dismissTimer?.invalidate() }
         }
@@ -148,7 +159,14 @@ final class FridayState: ObservableObject {
     @Published var closedNotchSize: CGSize = CGSize(width: 200, height: 32)
     @Published var standardWidth: CGFloat = 440
     @Published var isUserInitiatedExpansion = false
-    @Published var isHovering = false
+    
+    @Published var isHovering = false {
+        didSet {
+            if !isHovering && oldValue {
+                showNextAlert() 
+            }
+        }
+    }
 
     @Published var activeAlert: SystemAlert? = nil
     @Published var activeTab: NotchTab = .home
@@ -190,7 +208,7 @@ final class FridayState: ObservableObject {
                     displayState = .mini
                 }
             } else {
-                if displayState != .dismissed && activeAlert == nil {
+                if displayState != .dismissed && activeAlert == nil && !isHovering {
                     startDismissTimer()
                 }
             }
@@ -202,7 +220,7 @@ final class FridayState: ObservableObject {
         dismissTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                if !self.isActive && !self.isUserInitiatedExpansion && self.activeAlert == nil {
+                if !self.isActive && !self.isUserInitiatedExpansion && self.activeAlert == nil && !self.isHovering {
                     withAnimation(.interactiveSpring(response: 0.8, dampingFraction: 0.9)) {
                         self.displayState = self.isPlayingMusic ? .mini : .dismissed
                     }
@@ -213,15 +231,16 @@ final class FridayState: ObservableObject {
 
     private func showNextAlert() {
         guard !alertQueue.isEmpty else {
-            if !self.isPlayingMusic && !self.isActive && self.displayState == .mini {
+            if !self.isPlayingMusic && !self.isActive && (self.displayState == .mini || self.displayState == .miniExpanded) {
+                if self.isHovering { return }
                 withAnimation(.interactiveSpring(response: 0.8, dampingFraction: 0.9)) {
                     self.displayState = .dismissed
                 }
                 Task {
-                    try? await Task.sleep(nanoseconds: 800_000_000)
-                    if self.alertQueue.isEmpty { self.activeAlert = nil }
+                    try? await Task.sleep(nanoseconds: 1_200_000_000)
+                    if self.alertQueue.isEmpty && !self.isHovering { self.activeAlert = nil }
                 }
-            } else if !self.isPlayingMusic && !self.isActive {
+            } else if !self.isPlayingMusic && !self.isActive && !self.isHovering {
                 self.activeAlert = nil
             }
             return
@@ -236,7 +255,11 @@ final class FridayState: ObservableObject {
         }
 
         alertTimer = Timer.scheduledTimer(withTimeInterval: alert.duration, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.showNextAlert() }
+            Task { @MainActor in 
+                guard let self = self else { return }
+                if self.isHovering { return }
+                self.showNextAlert() 
+            }
         }
     }
 
@@ -246,7 +269,11 @@ final class FridayState: ObservableObject {
                 activeAlert = alert
                 alertTimer?.invalidate()
                 alertTimer = Timer.scheduledTimer(withTimeInterval: alert.duration, repeats: false) { [weak self] _ in
-                    Task { @MainActor in self?.showNextAlert() }
+                    Task { @MainActor in 
+                        guard let self = self else { return }
+                        if self.isHovering { return }
+                        self.showNextAlert() 
+                    }
                 }
                 return
             }

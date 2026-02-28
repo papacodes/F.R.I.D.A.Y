@@ -48,24 +48,26 @@ struct HorizontalNotchView: View {
 
     @ViewBuilder
     private var leftSection: some View {
-        if state.isPlayingMusic && !state.isActive {
+        if let alert = state.activeAlert {
+            if alert.id == "friday" {
+                MiniOrbView(isActive: state.isActive, isError: state.isError, isDevTask: state.isDevTaskRunning, isConnected: state.isConnected)
+                    .scaleEffect(1.1)
+            } else {
+                Image(systemName: alert.icon)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(alert.color)
+            }
+        } else if state.isPlayingMusic && !state.isActive {
             MiniWaveform(isActive: true, color: .white)
                 .frame(width: 32, height: 14)
                 .transition(.opacity.combined(with: .scale))
         } else {
             HStack(spacing: 10) {
-                MiniOrbView(
-                    isActive: state.isActive,
-                    isError: state.isError,
-                    isDevTask: state.isDevTaskRunning,
-                    isConnected: state.isConnected
-                )
-                .padding(.leading, -4)
-                
+                MiniOrbView(isActive: state.isActive, isError: state.isError, isDevTask: state.isDevTaskRunning, isConnected: state.isConnected)
+                    .padding(.leading, -4)
                 if state.isActive {
                     MiniWaveform(isActive: true, color: activeColor)
                         .frame(width: 24, height: 12)
-                        .transition(.opacity.combined(with: .scale))
                 }
             }
         }
@@ -76,50 +78,41 @@ struct HorizontalNotchView: View {
     @ViewBuilder
     private var centerSection: some View {
         HStack(spacing: 12) {
-            if state.isError {
-                Text("CONNECTION ERROR")
+            if let alert = state.activeAlert {
+                let label: String = {
+                    if alert.id == "airpods" { return state.peripheralManager.airPodsState.name?.uppercased() ?? "AIRPODS" }
+                    if alert.style == .bar || alert.style == .ring || alert.style == .battery {
+                        return "\(alert.id.uppercased()) \(Int(alert.value * 100))%"
+                    }
+                    return alert.id.uppercased()
+                }()
+                Text(label)
                     .font(.system(size: 10, weight: .black, design: .rounded))
-                    .foregroundColor(.red)
+                    .foregroundColor(.white)
                     .tracking(1.0)
+            } else if state.isError {
+                Text("CONNECTION ERROR").font(.system(size: 10, weight: .black, design: .rounded)).foregroundColor(.red).tracking(1.0)
             } else if state.isDevTaskRunning {
                 HStack(spacing: 8) {
-                    Text("RUNNING TASK")
-                        .font(.system(size: 10, weight: .black, design: .rounded))
-                        .foregroundColor(.orange)
-                        .tracking(1.0)
+                    Text("RUNNING TASK").font(.system(size: 10, weight: .black, design: .rounded)).foregroundColor(.orange).tracking(1.0)
                     ProgressView().controlSize(.mini).tint(.orange)
                 }
             } else if state.isActive {
                 HStack(spacing: 8) {
-                    Text(activeLabel.uppercased())
-                        .font(.system(size: 10, weight: .black, design: .rounded))
-                        .foregroundColor(.white)
-                        .tracking(1.0)
+                    Text(activeLabel.uppercased()).font(.system(size: 10, weight: .black, design: .rounded)).foregroundColor(.white).tracking(1.0)
                     if !state.transcript.isEmpty {
-                        Text(state.transcript)
-                            .font(.system(size: 10, weight: .bold, design: .rounded))
-                            .foregroundColor(.white.opacity(0.45))
-                            .lineLimit(1)
+                        Text(state.transcript).font(.system(size: 10, weight: .bold, design: .rounded)).foregroundColor(.white.opacity(0.45)).lineLimit(1)
                     }
                 }
             } else if state.isPlayingMusic {
                 VStack(alignment: .center, spacing: 0) {
-                    Text(state.nowPlayingTitle.uppercased())
-                        .font(.system(size: 10, weight: .black, design: .rounded))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
+                    Text(state.nowPlayingTitle.uppercased()).font(.system(size: 10, weight: .black, design: .rounded)).foregroundColor(.white).lineLimit(1)
                     if !state.nowPlayingArtist.isEmpty {
-                        Text(state.nowPlayingArtist)
-                            .font(.system(size: 9, weight: .bold, design: .rounded))
-                            .foregroundColor(.white.opacity(0.7))
-                            .lineLimit(1)
+                        Text(state.nowPlayingArtist).font(.system(size: 9, weight: .bold, design: .rounded)).foregroundColor(.white.opacity(0.7)).lineLimit(1)
                     }
                 }
             } else {
-                Text("FRIDAY IS READY")
-                    .font(.system(size: 10, weight: .black, design: .rounded))
-                    .foregroundColor(.white.opacity(0.3))
-                    .tracking(1.5)
+                Text("FRIDAY IS READY").font(.system(size: 10, weight: .black, design: .rounded)).foregroundColor(.white.opacity(0.3)).tracking(1.5)
             }
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: state.isActive)
@@ -129,10 +122,22 @@ struct HorizontalNotchView: View {
 
     @ViewBuilder
     private var rightSection: some View {
-        if state.isPlayingMusic && !state.isActive {
-            AlbumArtThumbnail(size: 22)
-                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
+        if let alert = state.activeAlert {
+            if alert.style == .bar {
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.1)).frame(width: 60, height: 4)
+                    Capsule().fill(alert.color).frame(width: CGFloat(alert.value * 60.0), height: 4)
+                }
+            } else if alert.style == .ring {
+                ZStack {
+                    Circle().stroke(Color.white.opacity(0.1), lineWidth: 3)
+                    Circle().trim(from: 0, to: CGFloat(alert.value)).stroke(alert.color, style: StrokeStyle(lineWidth: 3, lineCap: .round)).rotationEffect(.degrees(-90))
+                }.frame(width: 20, height: 20)
+            } else {
+                BatteryIndicator()
+            }
+        } else if state.isPlayingMusic && !state.isActive {
+            AlbumArtThumbnail(size: 22).clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
         } else {
             BatteryIndicator()
         }

@@ -25,6 +25,11 @@ enum AirPodsConnectionState: Equatable {
     case connecting
     case connected(name: String, status: AirPodsBatteryStatus)
     
+    var name: String? {
+        if case .connected(let name, _) = self { return name }
+        return nil
+    }
+    
     static func == (lhs: AirPodsConnectionState, rhs: AirPodsConnectionState) -> Bool {
         switch (lhs, rhs) {
         case (.disconnected, .disconnected), (.connecting, .connecting):
