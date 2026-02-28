@@ -1,5 +1,6 @@
 @preconcurrency import AppKit
 import SwiftUI
+import Combine
 
 @MainActor
 final class NotchWindowController: NSObject, NSWindowDelegate {
@@ -9,10 +10,8 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
     private let windowWidth:  CGFloat = 640
     private let windowHeight: CGFloat = 320
     
-    private var activityTimer: Timer?
     private var dismissalTimer: Timer?
     private var intentionalHoverTimer: Timer?
-    
     private var isMouseInside = false
 
     override init() {
@@ -44,21 +43,19 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
 
         // START DISMISSED
         dismiss()
-        
-        // Background Activity Watcher (Music/AI)
-        activityTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.checkActivity()
-            }
-        }
     }
     
     private func setupNotifications() {
+        // Hard dismiss — always goes fully dormant (Gemini goodbye, explicit force-stop)
         NotificationCenter.default.addObserver(forName: .fridayDismiss, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.dismiss() }
         }
+        // Smart collapse — respects active state (user tapping the notch closed)
+        NotificationCenter.default.addObserver(forName: .fridayCollapse, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.collapseOrDismiss() }
+        }
         NotificationCenter.default.addObserver(forName: .fridayExpand, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.goOpen(silent: true) }
+            Task { @MainActor in self?.goOpen(silent: true, userInitiated: true) }
         }
 
         // WAKE WORD: "Hey Friday" detected — summon the full panel and wake Gemini
@@ -82,12 +79,11 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
                     self?.intentionalHoverTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { _ in
                         Task { @MainActor in
                             if let self = self, self.isMouseInside {
-                                self.goStandard()
+                                self.goMiniExpanded(userInitiated: true) // Treat hover as user initiated mini expansion
                             }
                         }
                     }
-                } else if state.displayState == .standard && state.hasMusicTrack {
-                    // Music is playing — haptic pulse so the user knows the bar is interactive
+                } else if state.displayState == .miniExpanded && state.hasMusicTrack {
                     self?.triggerHaptic()
                 }
             }
@@ -97,9 +93,6 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
         NotificationCenter.default.addObserver(forName: NSNotification.Name("notchMouseExited"), object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self else { return }
-                // The tracking area is only 38pt, but the notch grows taller in
-                // standard-active (~70pt) and open (280pt) states. Guard against
-                // false exits when the cursor moves into expanded content below the zone.
                 if self.isCursorOverVisibleNotch { return }
 
                 self.isMouseInside = false
@@ -112,8 +105,9 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
     
     private func startDismissalTimer() {
         dismissalTimer?.invalidate()
-        dismissalTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: false) { [weak self] _ in
-            Task { @MainActor in
+        // Collapse to miniExpanded after 3s of cursor being away from the open panel
+        dismissalTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+            DispatchQueue.main.async {
                 self?.checkAndDismiss()
             }
         }
@@ -123,40 +117,20 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
         NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
     }
     
-    // MARK: - Activity Logic
-    
-    private func checkActivity() {
-        let state = FridayState.shared
-        
-        // Force open if music is playing
-        if state.hasMusicTrack && !state.isMusicPaused {
-            if state.displayState == .dismissed {
-                goStandard()
-            }
-            return
-        }
-        
-        // If we are in standard state but no music/AI/mouse is present, handle auto-dismiss
-        if state.displayState == .standard && !state.isActive && !state.hasMusicTrack && !isMouseInside && !isCursorOverVisibleNotch {
-            let inactiveTime = Date().timeIntervalSince(state.lastActivityTime)
-            if inactiveTime > 5.0 {
-                dismiss()
-            }
-        }
-
-        // If music was paused, wait 5s
-        if state.isMusicPaused && state.displayState == .standard && !isMouseInside && !isCursorOverVisibleNotch {
-            let inactiveTime = Date().timeIntervalSince(state.lastMusicActivity)
-            if inactiveTime > 5.0 {
-                dismiss()
-            }
-        }
-    }
-    
     private func checkAndDismiss() {
         let state = FridayState.shared
-        if !isMouseInside && !isCursorOverVisibleNotch && !state.isActive && !state.isPlayingMusic {
-            dismiss()
+        // Collapse logic based on new requirements:
+        // Collapse to miniExpanded if active or music, unless user-initiated expansion is true (should stay open until dismissed)
+        // Dismiss fully only when truly inactive and not user expanded.
+
+        withAnimation(.interactiveSpring(response: 0.8, dampingFraction: 0.9)) {
+            if state.isUserInitiatedExpansion {
+                // Do nothing, wait for explicit dismiss
+            } else if state.isActive || state.hasMusicTrack || isMouseInside {
+                state.displayState = .miniExpanded
+            } else {
+                state.displayState = .dismissed
+            }
         }
     }
 
@@ -164,31 +138,53 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
 
     func toggle() {
         switch FridayState.shared.displayState {
-        case .dismissed, .standard, .alert: goOpen()
-        case .open:                 goStandard()
+        case .dismissed, .miniExpanded, .alert: goOpen(userInitiated: true)
+        case .open:                             collapseOrDismiss()
         }
     }
 
-    func goStandard() {
-        // Capture before animation mutates the state
+    /// Smart collapse — called when the user taps to dismiss the open panel.
+    /// Collapses to mini if Friday is active (keeps pipeline running);
+    /// fully dismisses and stops the pipeline if she's idle.
+    func collapseOrDismiss() {
+        let state = FridayState.shared
+        FridayState.shared.isUserInitiatedExpansion = false
+        triggerHaptic()
+
+        if state.isActive || state.isDevTaskRunning {
+            withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.9)) {
+                FridayState.shared.displayState = .miniExpanded
+            }
+            // Pipeline keeps running — Friday is still working
+        } else {
+            WakeWordEngine.shared.stop()
+            withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.9)) {
+                FridayState.shared.displayState = .dismissed
+            }
+            // Graceful shutdown — Friday writes session notes before the pipeline closes.
+            // The pipeline posts .fridayDismiss itself when done (or after 15s fallback).
+            AppDelegate.pipeline.startGracefulStop()
+        }
+    }
+
+    func goMiniExpanded(userInitiated: Bool = false) {
         let fromOpen = FridayState.shared.displayState == .open
         FridayState.shared.recordActivity()
+        FridayState.shared.isUserInitiatedExpansion = userInitiated
         withAnimation(.interactiveSpring(response: 0.38, dampingFraction: 0.8)) {
-            FridayState.shared.displayState = .standard
+            FridayState.shared.displayState = .miniExpanded
             triggerHaptic()
         }
-        // Notch is visible — start listening for the wake word.
-        // If coming from open, give AudioProcessor a moment to release the mic first.
         Task {
             if fromOpen { try? await Task.sleep(nanoseconds: 600_000_000) }
             WakeWordEngine.shared.start()
         }
     }
 
-    func goOpen(silent: Bool = false) {
-        // Stop wake word before Gemini takes the mic
+    func goOpen(silent: Bool = false, userInitiated: Bool = false) {
         WakeWordEngine.shared.stop()
         FridayState.shared.recordActivity()
+        FridayState.shared.isUserInitiatedExpansion = userInitiated
         triggerHaptic()
         withAnimation(.interactiveSpring(response: 0.38, dampingFraction: 0.8)) {
             FridayState.shared.displayState = .open
@@ -198,22 +194,17 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
 
     func dismiss() {
         FridayState.shared.recordActivity()
+        FridayState.shared.isUserInitiatedExpansion = false
         withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.9)) {
             FridayState.shared.displayState = .dismissed
             triggerHaptic()
         }
         AppDelegate.pipeline.stop()
-        // Mic is no longer needed — stop wake word. It restarts next time the notch
-        // enters standard state (on hover).
         WakeWordEngine.shared.stop()
     }
 
     // MARK: - Private
 
-    /// Checks whether the real cursor position (screen coordinates) is over the
-    /// visible notch content. This is the ground-truth guard used to catch false
-    /// mouseExited events fired by the narrow 38pt tracking area when the notch
-    /// has grown taller in standard-active or open states.
     private var isCursorOverVisibleNotch: Bool {
         let mouse = NSEvent.mouseLocation
         let frame = panel.frame
@@ -223,7 +214,7 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
         switch state.displayState {
         case .dismissed: visibleHeight = notchH
         case .alert:     return true
-        case .standard: visibleHeight = state.isActive ? notchH * 2.2 : notchH
+        case .miniExpanded: visibleHeight = state.isActive || state.hasMusicTrack ? notchH * 2.2 : notchH
         case .open:      visibleHeight = NotchSizes.openHeight
         }
         let checkRect = NSRect(

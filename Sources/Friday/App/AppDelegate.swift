@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Foundation // Import Foundation for file management
 
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -20,6 +21,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Private
 
     private func launch() {
+        loadMemory() // Load long-term memory context on launch
+
         windowController = NotchWindowController()
 
         hotkeyManager = HotkeyManager { [weak self] in
@@ -51,6 +54,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     self.launch()
                 }
             }
+        }
+    }
+
+    /// Loads Friday's operational knowledge base from the notes workspace.
+    private func loadMemory() {
+        let memoryPath = NSString(string: "~/Documents/notes/projects/friday/GEMINI.md").expandingTildeInPath
+        do {
+            let context = try String(contentsOfFile: memoryPath, encoding: .utf8)
+            FridayState.shared.longTermMemoryContext = context
+            FridayState.shared.addActivity(type: .info, title: "Memory Loaded", subtitle: "Context file read successfully.")
+            print("Loaded long-term memory context.")
+        } catch {
+            FridayState.shared.addActivity(type: .error, title: "Memory Load Failed", subtitle: error.localizedDescription)
+            print("Failed to load long-term memory: \(error.localizedDescription)")
         }
     }
 }

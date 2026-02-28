@@ -19,10 +19,11 @@ struct FridayView: View {
         switch state.displayState {
         case .dismissed: return state.closedNotchSize
         case .alert:     return CGSize(width: 440, height: h)
-        case .standard:  
-            let targetHeight = state.isActive ? h * 2.2 : h
+        case .miniExpanded:
+            // Mini expanded height is standard unless active, as defined in NotchWindowController
+            let targetHeight = state.isActive || state.hasMusicTrack ? h * 2.2 : h
             return CGSize(width: state.standardWidth, height: targetHeight)
-        case .open:      
+        case .open:
             return CGSize(width: NotchSizes.openWidth, height: NotchSizes.openHeight)
         }
     }
@@ -43,8 +44,9 @@ struct FridayView: View {
             Color.black
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    if state.displayState == .open { 
-                        NotificationCenter.default.post(name: .fridayDismiss, object: nil) 
+                    if state.displayState == .open {
+                        // Smart collapse — goes to mini if Friday is active, dismissed if idle
+                        NotificationCenter.default.post(name: .fridayCollapse, object: nil)
                     } else {
                         NotificationCenter.default.post(name: .fridayExpand, object: nil)
                     }
@@ -66,6 +68,7 @@ struct FridayView: View {
                 .shadow(color: .black.opacity(state.displayState == .dismissed ? 0 : 0.6), radius: 40, x: 0, y: 20)
                 .animation(spring, value: state.displayState)
                 .animation(spring, value: state.isActive)
+                .animation(spring, value: state.hasMusicTrack)
                 .animation(spring, value: state.standardWidth)
 
             // Content
@@ -83,7 +86,7 @@ struct FridayView: View {
     @ViewBuilder
     private var notchContent: some View {
         let notchH = state.closedNotchSize.height
-        
+
         switch state.displayState {
 
         case .dismissed:
@@ -99,12 +102,12 @@ struct FridayView: View {
                 .frame(width: 440, height: notchH)
                 .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .top)))
 
-        case .standard:
+        case .miniExpanded:
             HorizontalNotchView()
-                .padding(.top, state.isActive ? notchH : 0)
+                .padding(.top, state.isActive || state.hasMusicTrack ? notchH : 0)
                 .frame(
                     width:  state.standardWidth,
-                    height: state.isActive ? notchH * 2.2 : notchH
+                    height: state.isActive || state.hasMusicTrack ? notchH * 2.2 : notchH
                 )
                 .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
 

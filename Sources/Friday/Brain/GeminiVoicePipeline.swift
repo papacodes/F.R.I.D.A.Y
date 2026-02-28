@@ -6,13 +6,17 @@ import SwiftUI
 final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
     private let state: FridayState
-    private let devBrain = ClaudeProcess()
     private let audioProcessor = AudioProcessor()
 
     private var wsTask: URLSessionWebSocketTask?
     private var urlSession: URLSession?
-    private var connectionContinuation: CheckedContinuation<Void, Never>?
+    /// Resumed with `true` on open, `false` on handshake failure — prevents connect() hanging forever.
+    private var connectionContinuation: CheckedContinuation<Bool, Never>?
     private var isConnecting = false
+    private var isReconnecting = false
+    private var reconnectAttempts = 0
+    /// Set before any intentional disconnect — prevents receiveLoop from triggering reconnect.
+    private var intentionalStop = false
 
     private let outputEngine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
@@ -52,9 +56,13 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
     func stop() {
         isConnecting = false
+        reconnectAttempts = 0
+        intentionalStop = true
         let task = wsTask
         wsTask = nil
         audioProcessor.wsTask = nil
+        urlSession?.invalidateAndCancel()
+        urlSession = nil
         task?.cancel(with: .goingAway, reason: nil)
         
         audioProcessor.isMuted = true
@@ -65,12 +73,36 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         state.update(\.isListening, to: false)
         state.update(\.isThinking, to: false)
         state.update(\.isSpeaking, to: false)
+        state.update(\.isConnected, to: false)
         state.update(\.volume, to: 0.0)
-        state.update(\.isError, to: false) // Reset error on intentional stop
+        state.update(\.isError, to: false)
+    }
+
+    /// Graceful shutdown: asks Gemini to write session notes and say goodbye,
+    /// then dismisses when turnComplete arrives (or after a 15s fallback).
+    /// Call this instead of stop() for intentional user-initiated dismissals.
+    func startGracefulStop() {
+        guard wsTask != nil else { return }
+        intentionalStop = true
+        let dateStr: String = {
+            let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f.string(from: Date())
+        }()
+        let notePath = "~/Documents/notes/projects/friday/sessions/\(dateStr).md"
+        let msg = ClientContentMessage(clientContent: ClientContent(turns: [
+            ContentTurn(role: "user", parts: [TextPart(text: "System: Session ending. Write a brief note to \(notePath) — what was worked on today, what carries forward. Then say a quick goodbye.")])
+        ], turnComplete: true))
+        Task { await self.sendEncoded(msg) }
+        // Fallback: force dismiss if Gemini doesn't complete
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            guard self?.intentionalStop == true else { return }
+            NotificationCenter.default.post(name: .fridayDismiss, object: nil)
+        }
     }
 
     private func connect() async {
         guard !isConnecting else { return }
+        intentionalStop = false
         guard let apiKey = Config.shared.apiKey, !apiKey.isEmpty else {
             state.update(\.isError, to: true)
             return
@@ -91,25 +123,64 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
         setupOutputAudio()
 
-        await withCheckedContinuation { cont in
+        let connected = await withCheckedContinuation { cont in
             self.connectionContinuation = cont
         }
         self.connectionContinuation = nil
+
+        guard connected else {
+            isConnecting = false
+            // Handshake failed — schedule retry from outside the continuation
+            Task { await reconnect() }
+            return
+        }
 
         await sendSetup()
         Task { await receiveLoop() }
         isConnecting = false
     }
 
+    /// Exponential backoff reconnect. Cleans up the stale session before each attempt.
+    private func reconnect() async {
+        guard !isReconnecting else { return }
+        // wsTask being non-nil means we still want a connection (not an intentional stop)
+        guard wsTask != nil || state.isConnected else { return }
+        isReconnecting = true
+        defer { isReconnecting = false }
+
+        reconnectAttempts += 1
+        let delay = min(pow(2.0, Double(reconnectAttempts - 1)), 30.0) // 1, 2, 4, 8, 16, 30…
+        print("Friday: reconnect attempt \(reconnectAttempts) in \(Int(delay))s")
+        state.update(\.isConnected, to: false)
+        state.update(\.isError, to: true)
+
+        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+
+        // Bail if stop() was called while we were sleeping
+        guard wsTask != nil || reconnectAttempts > 0 else { return }
+
+        // Tear down the stale session cleanly before creating a new one
+        let stale = urlSession
+        urlSession = nil
+        wsTask = nil
+        audioProcessor.wsTask = nil
+        stale?.invalidateAndCancel()
+        isConnecting = false
+
+        await connect()
+    }
+
     private func sendSetup() async {
+        let knowledgeBase = state.longTermMemoryContext.isEmpty
+            ? ""
+            : "\n\n---\n\n\(state.longTermMemoryContext)"
+
         let instructions = """
         You are Friday, Papa's macOS AI assistant living in his MacBook's notch.
-        Persona: Terse, competent, proactive colleague.
-        CRITICAL: ALWAYS acknowledge a request immediately (e.g. "On it", "Sure", "Doing that") before calling any tool. Never perform a tool call in silence.
-        Memory: You use the ~/Documents/notes directory as your long-term memory. 
-        Projects: When Papa mentions a project (e.g., "Project Oats"), use your tools to load context from relevant notes.
-        Dev Brain: You help with engineering tasks using Claude Code.
-        Dormant: You can disconnect your own session to save power/API cost by calling disconnect_session. Do this when Papa says goodbye or when the conversation is finished.
+        Dev capabilities: You have direct file system and shell access via read_file, write_file, list_directory, and run_shell. Code lives in ~/projects/. Notes live in ~/Documents/notes/.
+        Shell: run_shell runs any zsh command. Always pass a directory when the command is project-specific.
+        Call disconnect_session when Papa says goodbye or the conversation is finished.
+        \(knowledgeBase)
         """
 
         let msg = SetupMessage(
@@ -123,7 +194,8 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 ),
                 systemInstruction: SystemInstruction(parts: [TextPart(text: instructions)]),
                 tools: [ToolsList(functionDeclarations: [
-                    Self.devTaskTool, Self.weatherTool, Self.timeTool, Self.batteryTool,
+                    Self.readFileTool, Self.writeFileTool, Self.listDirectoryTool, Self.runShellTool,
+                    Self.weatherTool, Self.timeTool, Self.batteryTool,
                     Self.mapTool, Self.searchTool, Self.musicTool,
                     Self.playlistTool, Self.notesTool, Self.remindersTool,
                     Self.calendarTool, Self.disconnectTool
@@ -149,11 +221,9 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 break
             }
         }
-        
-        if wsTask != nil && !isConnecting {
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            if wsTask != nil { await connect() }
-        }
+
+        // Unintentional drop — reconnect with backoff (skip if we stopped intentionally)
+        if !isConnecting && !intentionalStop { await reconnect() }
     }
 
     private func handleServer(_ data: Data) async {
@@ -169,37 +239,54 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             }
 
             if msg.setupComplete != nil {
+                // Stable session confirmed — check before resetting so we know if this is a reconnect
+                let wasReconnect = reconnectAttempts > 0
+                reconnectAttempts = 0
                 audioProcessor.start(ws: wsTask) { [weak self] active, rms in
-                    DispatchQueue.main.async { 
+                    DispatchQueue.main.async {
                         self?.state.update(\.isListening, to: active)
                         if active { self?.state.update(\.volume, to: rms) }
                         else if self?.state.isSpeaking == false { self?.state.update(\.volume, to: 0.0) }
                     }
                 }
+                if wasReconnect {
+                    Task { await self.sendReconnectNotice() }
+                }
             }
 
             if let content = msg.serverContent {
+                if content.turnComplete == true {
+                    state.update(\.isSpeaking, to: false)
+                    audioProcessor.isMuted = false
+                    state.update(\.volume, to: 0.0)
+                    // Intentional stop (voice goodbye or UI dismiss) — wait for audio to finish then close
+                    if intentionalStop {
+                        Task { [weak self] in
+                            try? await Task.sleep(nanoseconds: 2_500_000_000)
+                            guard self?.intentionalStop == true else { return }
+                            NotificationCenter.default.post(name: .fridayDismiss, object: nil)
+                        }
+                    }
+                }
+
                 if let turn = content.modelTurn {
                     for part in turn.parts {
                         if let inline = part.inlineData, let audioData = Data(base64Encoded: inline.data) {
                             if !state.isSpeaking {
                                 state.update(\.isSpeaking, to: true)
-                                audioProcessor.isMuted = true
+                                audioProcessor.isMuted = true  // prevent echo while speaking
                             }
                             playPCMChunk(audioData)
                         }
                     }
                 }
+
                 if let t = content.outputTranscription { state.update(\.transcript, to: t.text) }
-                
-                if content.turnComplete == true { 
-                    self.state.update(\.isSpeaking, to: false)
-                    self.audioProcessor.isMuted = false 
-                    self.state.update(\.volume, to: 0.0)
-                }
             }
 
             if let toolCall = msg.toolCall {
+                // Unmute mic so Papa can interrupt while tools are running
+                audioProcessor.isMuted = false
                 for call in toolCall.functionCalls {
                     Task { await handleToolCall(call) }
                 }
@@ -239,12 +326,32 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         var result = "Task complete."
         
         switch call.name {
-        case "execute_dev_task":
-            if let prompt = call.args["prompt"] {
+        case "read_file":
+            if let path = call.args["path"] {
                 state.update(\.isDevTaskRunning, to: true)
-                result = (try? await devBrain.ask(prompt)) ?? "Error running task."
+                result = FileSystemSkill.readFile(path: path)
                 state.update(\.isDevTaskRunning, to: false)
             }
+
+        case "write_file":
+            if let path = call.args["path"], let content = call.args["content"] {
+                state.update(\.isDevTaskRunning, to: true)
+                result = FileSystemSkill.writeFile(path: path, content: content)
+                state.update(\.isDevTaskRunning, to: false)
+            }
+
+        case "list_directory":
+            if let path = call.args["path"] {
+                result = FileSystemSkill.listDirectory(path: path)
+            }
+
+        case "run_shell":
+            if let command = call.args["command"] {
+                state.update(\.isDevTaskRunning, to: true)
+                result = await ShellSkill.run(command, directory: call.args["directory"])
+                state.update(\.isDevTaskRunning, to: false)
+            }
+
         case "get_weather":
             result = await WeatherSkill.fetchWeather()
         case "get_time":
@@ -302,10 +409,16 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 }
             }
         case "disconnect_session":
-            result = "Offline. Goodbye Papa."
-            Task { @MainActor in
-                // Delay dismissal so we hear the final words
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
+            intentionalStop = true
+            let dateStr: String = {
+                let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f.string(from: Date())
+            }()
+            let notePath = "~/Documents/notes/projects/friday/sessions/\(dateStr).md"
+            result = "Closing session. Write a brief session note to \(notePath) — what was worked on today, key decisions, what carries forward. Append to the file if it already exists. Then say a brief goodbye to Papa."
+            // Fallback: if Gemini doesn't complete within 15s, force dismiss
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                guard self?.intentionalStop == true else { return }
                 NotificationCenter.default.post(name: .fridayDismiss, object: nil)
             }
         default:
@@ -317,6 +430,14 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             FunctionResponseItem(id: call.id, name: call.name, response: ["output": result])
         ]))
         await sendEncoded(response)
+    }
+
+    private func sendReconnectNotice() async {
+        // Fresh session after a drop — session context was lost, keep it honest and brief
+        let msg = ClientContentMessage(clientContent: ClientContent(turns: [
+            ContentTurn(role: "user", parts: [TextPart(text: "System: Connection was interrupted and just restored. Tell Papa you're back — one sentence, no apology.")])
+        ], turnComplete: true))
+        await sendEncoded(msg)
     }
 
     private func sendGreeting() async {
@@ -355,32 +476,77 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     }
 
     nonisolated func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
-        Task { @MainActor in 
+        Task { @MainActor in
             FridayState.shared.update(\.isConnected, to: true)
-            self.connectionContinuation?.resume() 
+            FridayState.shared.update(\.isError, to: false)
+            // Don't reset reconnectAttempts here — the socket can open and instantly drop.
+            // Reset only in handleServer when setupComplete confirms a stable session.
+            self.connectionContinuation?.resume(returning: true)
+            self.connectionContinuation = nil
         }
     }
 
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
-        if let err = error as NSError?, err.domain == NSURLErrorDomain && err.code == NSURLErrorCancelled {
-            return
-        }
-        Task { @MainActor in 
-            // Only set error if we didn't stop intentionally (wsTask would be nil in stop())
-            if !self.isConnecting && self.wsTask != nil {
-                FridayState.shared.update(\.isError, to: true)
-            }
+        // nil = clean close (server said goodbye, or stop() already tore us down) — not an error
+        guard let error else { return }
+        // Ignore clean cancellations from stop() or invalidateAndCancel()
+        if let err = error as NSError?,
+           err.domain == NSURLErrorDomain && err.code == NSURLErrorCancelled { return }
+
+        print("Friday: session error — \(error)")
+        Task { @MainActor in
             self.isConnecting = false
+            // Unblock connect() if it's waiting on the handshake
+            if self.connectionContinuation != nil {
+                self.connectionContinuation?.resume(returning: false)
+                self.connectionContinuation = nil
+            }
         }
     }
 
-    private static let devTaskTool = FunctionDecl(
-        name: "execute_dev_task",
-        description: "Run a dev task with Claude Code.",
+    private static let readFileTool = FunctionDecl(
+        name: "read_file",
+        description: "Read the full contents of a file. Use ~ for home directory. Supports all text files — Swift, Dart, Markdown, JSON, etc.",
         parameters: FunctionParams(
             type: "object",
-            properties: ["prompt": ParamProperty(type: "STRING", description: "The task description")],
-            required: ["prompt"]
+            properties: ["path": ParamProperty(type: "STRING", description: "Absolute or ~-relative path to the file")],
+            required: ["path"]
+        )
+    )
+
+    private static let writeFileTool = FunctionDecl(
+        name: "write_file",
+        description: "Write content to a file, creating it or overwriting it. Use this to create or fully replace files.",
+        parameters: FunctionParams(
+            type: "object",
+            properties: [
+                "path":    ParamProperty(type: "STRING", description: "Absolute or ~-relative path to the file"),
+                "content": ParamProperty(type: "STRING", description: "The full content to write")
+            ],
+            required: ["path", "content"]
+        )
+    )
+
+    private static let listDirectoryTool = FunctionDecl(
+        name: "list_directory",
+        description: "List files and subdirectories in a directory. Hidden files are excluded.",
+        parameters: FunctionParams(
+            type: "object",
+            properties: ["path": ParamProperty(type: "STRING", description: "Absolute or ~-relative path to the directory")],
+            required: ["path"]
+        )
+    )
+
+    private static let runShellTool = FunctionDecl(
+        name: "run_shell",
+        description: "Run any zsh command — git, swift build, grep, find, sed, xcode-select, etc. Returns stdout and stderr. Always pass a directory when working in a specific project.",
+        parameters: FunctionParams(
+            type: "object",
+            properties: [
+                "command":   ParamProperty(type: "STRING", description: "The shell command to run"),
+                "directory": ParamProperty(type: "STRING", description: "Optional working directory (e.g. ~/projects/friday)")
+            ],
+            required: ["command"]
         )
     )
 

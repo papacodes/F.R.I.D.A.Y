@@ -213,16 +213,52 @@ final class MediaRemoteManager {
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
-    func togglePlayPause() { _ = _sendCommand?(2, nil) }
-    func nextTrack()        { _ = _sendCommand?(4, nil) }
-    func previousTrack()    { _ = _sendCommand?(5, nil) }
+    // MARK: - Media Controls (Reliable osascript implementation)
+
+    private func sendMediaCommand(osascriptAction: String) {
+        Task {
+            let script = """
+            tell application "System Events"
+                set musicRunning to (name of processes) contains "Music"
+                set spotifyRunning to (name of processes) contains "Spotify"
+                
+                if musicRunning then
+                    tell application "Music" to \(osascriptAction)
+                else if spotifyRunning then
+                    tell application "Spotify" to \(osascriptAction)
+                end if
+            end tell
+            """
+            _ = try? await runAppleScript(script)
+        }
+    }
+
+    func togglePlayPause() {
+        sendMediaCommand(osascriptAction: "playpause")
+    }
+
+    func nextTrack() {
+        sendMediaCommand(osascriptAction: "next track")
+    }
+
+    func previousTrack() {
+        sendMediaCommand(osascriptAction: "previous track")
+    }
 
     func seek(to position: TimeInterval) {
         FridayState.shared.playbackPosition = position
         positionAtFetch = position
         fetchDate = Date()
         Task {
-            _ = try? await runAppleScript("tell application \"Music\" to set player position to \(position)")
+            let script = """
+            tell application "System Events"
+                if (name of processes) contains "Music" then
+                    tell application "Music" to set player position to \(position)
+                -- Reliable seek for Spotify is not feasible via simple AppleScript
+                end if
+            end tell
+            """
+            _ = try? await runAppleScript(script)
         }
     }
 }

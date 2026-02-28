@@ -58,7 +58,7 @@ struct FridayStatusPanelView: View {
         if state.isThinking  { return "Thinking" }
         if state.isSpeaking  { return "Speaking" }
         if state.isError     { return "Error" }
-        return "Friday"
+        return "Friday." // Modified
     }
 
     private var statusColor: Color {

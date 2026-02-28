@@ -21,7 +21,7 @@ final class WakeWordEngine {
 
     // Phrases that trigger Friday. "hey" prefix dramatically reduces false positives
     // from everyday speech ("on Friday", "next Friday", etc.)
-    private let wakePhrases = ["hey friday", "hey iris"]
+    private let wakePhrases = ["hey friday", "hey iris", "friday", "yo friday", "iris"]
 
     private init() {}
 

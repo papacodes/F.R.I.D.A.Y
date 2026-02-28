@@ -1,11 +1,13 @@
 import Foundation
 import SwiftUI
+import Combine
 
 extension Notification.Name {
-    static let fridayTrigger  = Notification.Name("fridayTrigger")
-    static let fridayDismiss  = Notification.Name("fridayDismiss")
-    static let fridayExpand   = Notification.Name("fridayExpand")
-    static let fridayWakeWord = Notification.Name("fridayWakeWord")
+    static let fridayTrigger   = Notification.Name("fridayTrigger")
+    static let fridayDismiss   = Notification.Name("fridayDismiss")   // hard stop — Gemini goodbye
+    static let fridayCollapse  = Notification.Name("fridayCollapse")  // user dismiss — smart (mini if active)
+    static let fridayExpand    = Notification.Name("fridayExpand")
+    static let fridayWakeWord  = Notification.Name("fridayWakeWord")
 }
 
 // MARK: - Alert System
@@ -59,8 +61,8 @@ struct SystemAlert: Identifiable, Equatable {
 enum NotchDisplayState: Equatable {
     case alert       // System Notification (Volume, Brightness, etc.)
     case dismissed   // Physical notch only
-    case standard    // Horizontal expansion
-    case open        // Full vertical expansion
+    case miniExpanded    // Horizontal expansion, based on activity
+    case open        // Full vertical expansion, user-initiated
 }
 
 // MARK: - Activity Item
@@ -125,41 +127,68 @@ enum NotchTab: CaseIterable, Identifiable {
 @MainActor
 final class FridayState: ObservableObject {
     static let shared = FridayState()
-    private init() {}
+    private init() {
+        // Observe activity status and transition to miniExpanded if active
+        $isListening
+            .combineLatest($isThinking, $isSpeaking, $isDevTaskRunning)
+            .map { listening, thinking, speaking, devTask in
+                listening || thinking || speaking || devTask
+            }
+            .combineLatest($isPlayingMusic)
+            .sink { [weak self] (isActive, isPlayingMusic) in
+                self?.handleActivityChange(isActive || isPlayingMusic)
+            }
+            .store(in: &cancellables)
+        setupPeripheralObservation()
+    }
+
+    private var cancellables = Set<AnyCancellable>()
+    private var dismissTimer: Timer?
 
     // MARK: AI
-    @Published var isListening  = false
-    @Published var isThinking   = false
-    @Published var isSpeaking   = false
+    @Published var isListening  = false { didSet { recordActivity() } }
+    @Published var isThinking   = false { didSet { recordActivity() } }
+    @Published var isSpeaking   = false { didSet { recordActivity() } }
     @Published var isError      = false
     @Published var isConnected  = false
-    @Published var isDevTaskRunning = false
+    @Published var isDevTaskRunning = false { didSet { recordActivity() } }
     @Published var transcript   = ""
     @Published var volume: Float = 0.0
     @Published var modelName    = "Gemini 2.5 Flash"
     @Published var hasGreetedThisSession = false
     @Published var lastActivityTime = Date()
     @Published var activityFeed: [ActivityItem] = []
+    @Published var longTermMemoryContext: String = ""
 
     // MARK: Window
-    @Published var displayState: NotchDisplayState = .dismissed
+    @Published var displayState: NotchDisplayState = .dismissed {
+        didSet {
+            if displayState == .dismissed || displayState == .miniExpanded {
+                isUserInitiatedExpansion = false
+            }
+            if displayState != .dismissed {
+                startDismissTimer()
+            } else {
+                dismissTimer?.invalidate()
+            }
+        }
+    }
     @Published var closedNotchSize: CGSize = CGSize(width: 200, height: 32)
-    @Published var standardWidth: CGFloat = 440
+    @Published var standardWidth: CGFloat = 440 // Width for miniExpanded
+    @Published var isUserInitiatedExpansion = false // New flag for explicit click
 
     // MARK: Alerts
     @Published var activeAlert: SystemAlert? = nil
     private var preAlertState: NotchDisplayState = .dismissed
     private var alertTimer: Timer?
-    /// true when postAlert was the reason the notch transitioned dismissed→standard.
-    /// Only auto-dismiss on alert expiry when this is true.
     private var alertForcedStandard = false
 
     // MARK: Navigation
     @Published var activeTab: NotchTab = .home
 
     // MARK: Music
-    @Published var isPlayingMusic    = false
-    @Published var isMusicPaused     = false
+    @Published var isPlayingMusic    = false { didSet { recordActivity() } }
+    @Published var isMusicPaused     = false { didSet { recordActivity() } }
     @Published var nowPlayingTitle   = ""
     @Published var nowPlayingArtist  = ""
     @Published var albumArt: NSImage? = nil
@@ -175,14 +204,44 @@ final class FridayState: ObservableObject {
     @Published var lastMusicActivity: Date = Date()
 
     var hasMusicTrack: Bool { isPlayingMusic || isMusicPaused }
-    var isActive: Bool { isListening || isThinking || isSpeaking }
+    var isActive: Bool { isListening || isThinking || isSpeaking || isDevTaskRunning }
     var isExpanded: Bool { displayState == .open }
+
+    private func handleActivityChange(_ isActiveOrMusic: Bool) {
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
+            if isActiveOrMusic {
+                // When active, transition to miniExpanded if not already open by user
+                if displayState == .dismissed {
+                    displayState = .miniExpanded
+                }
+            } else {
+                // When inactive, start timer to collapse to miniExpanded or dismissed
+                startDismissTimer()
+            }
+        }
+    }
+
+    private func startDismissTimer() {
+        dismissTimer?.invalidate()
+        dismissTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
+            DispatchQueue.main.async {
+                withAnimation(.spring(response: 0.8, dampingFraction: 0.9)) {
+                    // Collapse to miniExpanded if not active and not user expanded
+                    if !(self?.isActive ?? false) && !(self?.hasMusicTrack ?? false) && !(self?.isUserInitiatedExpansion ?? false) {
+                        self?.displayState = .dismissed // Changed to dismissed based on consolidated logic
+                    } else if !(self?.isUserInitiatedExpansion ?? false) {
+                         self?.displayState = .miniExpanded // Stay in miniExpanded if active or music, but not user expanded
+                    }
+                }
+            }
+        }
+    }
 
     func update<T: Equatable>(_ keyPath: ReferenceWritableKeyPath<FridayState, T>, to value: T) {
         if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
     }
 
-    func recordActivity() { lastActivityTime = Date(); lastMusicActivity = Date() }
+    func recordActivity() { lastActivityTime = Date(); lastMusicActivity = Date(); startDismissTimer() }
 
     func addActivity(type: ActivityItem.ActivityType, title: String, subtitle: String? = nil) {
         let item = ActivityItem(type: type, title: title, subtitle: subtitle)
@@ -209,6 +268,20 @@ final class FridayState: ObservableObject {
         }
     }
 
+    // MARK: Peripherals
+    @Published var peripheralManager = PeripheralManager()
+    @Published var airPodsConnectionState: AirPodsConnectionState = .disconnected
 
+    private func setupPeripheralObservation() {
+        peripheralManager.$airPodsState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                self?.airPodsConnectionState = state
+                if case .connected(let name, let status) = state {
+                    let avgBattery = ((status.left ?? 0) + (status.right ?? 0)) / 2
+                    self?.postAlert(SystemAlert.airpods(name: name, level: avgBattery))
+                }
+            }
+            .store(in: &cancellables)
+    }
 }
-
