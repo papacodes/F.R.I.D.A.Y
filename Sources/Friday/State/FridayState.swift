@@ -166,13 +166,17 @@ final class FridayState: ObservableObject {
     // MARK: Window
     @Published var displayState: NotchDisplayState = .dismissed {
         didSet {
+            guard displayState != oldValue else { return }
+            
             if displayState != .open {
                 isUserInitiatedExpansion = false
             }
-            if displayState == .dismissed {
-                dismissTimer?.invalidate()
-            } else {
+            
+            // Only start dismissal timer if we transitioned into a transient state (mini/miniExpanded)
+            if displayState != .dismissed && displayState != .open {
                 startDismissTimer()
+            } else if displayState == .dismissed {
+                dismissTimer?.invalidate()
             }
         }
     }
@@ -182,6 +186,7 @@ final class FridayState: ObservableObject {
 
     // MARK: Alerts
     @Published var activeAlert: SystemAlert? = nil
+    private var alertQueue: [SystemAlert] = []
     private var alertTimer: Timer?
 
     // MARK: Navigation
@@ -208,7 +213,15 @@ final class FridayState: ObservableObject {
     var isActive: Bool { isListening || isThinking || isSpeaking || isDevTaskRunning }
     var isExpanded: Bool { displayState == .open }
 
+    private var lastIsActive = false
+    private var lastIsPlayingMusic = false
+
     private func handleActivityChange(isActive: Bool, isPlayingMusic: Bool) {
+        // Prevent spamming state changes if nothing changed
+        guard isActive != lastIsActive || isPlayingMusic != lastIsPlayingMusic else { return }
+        lastIsActive = isActive
+        lastIsPlayingMusic = isPlayingMusic
+
         withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
             if isActive {
                 // Friday is working — show miniExpanded unless already in open
@@ -221,19 +234,29 @@ final class FridayState: ObservableObject {
                     displayState = .mini
                 }
             } else {
-                startDismissTimer()
+                // If not active and not playing music, go dormant
+                if displayState != .dismissed {
+                    startDismissTimer()
+                }
             }
         }
     }
 
     private func startDismissTimer() {
+        print("[Notch] Starting 3s dismissal timer...")
         dismissTimer?.invalidate()
-        dismissTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
+        dismissTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
             DispatchQueue.main.async {
-                withAnimation(.spring(response: 0.8, dampingFraction: 0.9)) {
-                    guard let self else { return }
-                    if self.isActive || self.isUserInitiatedExpansion { return }
-                    self.displayState = self.hasMusicTrack ? .mini : .dismissed
+                guard let self = self else { return }
+                
+                let isBusy = self.isActive || self.isUserInitiatedExpansion || self.activeAlert != nil
+                print("[Notch] Dismiss timer fired. isBusy: \(isBusy), playingMusic: \(self.isPlayingMusic)")
+                
+                if !isBusy {
+                    print("[Notch] -> Dismissing to \(self.isPlayingMusic ? "mini" : "dismissed")")
+                    withAnimation(.interactiveSpring(response: 0.8, dampingFraction: 0.9)) {
+                        self.displayState = self.isPlayingMusic ? .mini : .dismissed
+                    }
                 }
             }
         }
@@ -243,7 +266,7 @@ final class FridayState: ObservableObject {
         if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
     }
 
-    func recordActivity() { lastActivityTime = Date(); lastMusicActivity = Date(); startDismissTimer() }
+    func recordActivity() { lastActivityTime = Date(); lastMusicActivity = Date() }
 
     func addActivity(type: ActivityItem.ActivityType, title: String, subtitle: String? = nil) {
         let item = ActivityItem(type: type, title: title, subtitle: subtitle)
@@ -272,8 +295,9 @@ final class FridayState: ObservableObject {
             Task { @MainActor in
                 withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
                     self.activeAlert = nil
-                    // Dismiss timer will handle natural collapse back
                 }
+                // Now that alert is nil, start the countdown to full dismissal
+                self.startDismissTimer()
             }
         }
     }

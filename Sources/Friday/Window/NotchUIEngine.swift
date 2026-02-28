@@ -42,7 +42,18 @@ final class NotchUIEngine: NSObject, NSWindowDelegate {
         setupNotifications()
 
         // START DISMISSED
-        dismiss()
+        FridayState.shared.displayState = .dismissed
+        // Initial "Ready" sequence
+        Task {
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            // Show the mini view briefly as a "system ready" signal
+            withAnimation(.spring()) {
+                FridayState.shared.displayState = .mini
+            }
+            // Ensure no sticky user flags are set
+            FridayState.shared.isUserInitiatedExpansion = false
+            // Natural dismissal timer in FridayState will take it back to .dismissed after 3s
+        }
     }
     
     private func setupNotifications() {
@@ -219,12 +230,15 @@ final class NotchUIEngine: NSObject, NSWindowDelegate {
     func dismiss() {
         FridayState.shared.recordActivity()
         FridayState.shared.isUserInitiatedExpansion = false
+        
+        // Stop everything immediately
+        AppDelegate.pipeline.stop()
+        WakeWordEngine.shared.stop()
+        
         withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.9)) {
             FridayState.shared.displayState = .dismissed
             triggerHaptic()
         }
-        AppDelegate.pipeline.stop()
-        WakeWordEngine.shared.stop()
     }
 
     // MARK: - Private
