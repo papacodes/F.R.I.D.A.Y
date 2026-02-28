@@ -22,9 +22,9 @@ struct FridayView: View {
             // Unify canvas width with alerts (440) + 2px overshoot for coverage
             return CGSize(width: 440, height: h + 2)
         case .miniExpanded:
-            let targetHeight = state.isActive || state.hasMusicTrack ? h * 2.2 : h
-            let w = state.activeAlert != nil ? 440 : state.standardWidth
-            return CGSize(width: w, height: targetHeight)
+            // Standard height: 32 (Row 1) + 32 (Row 2) = 64
+            let targetHeight = h * 2.0 
+            return CGSize(width: state.standardWidth, height: targetHeight)
         case .open:
             return CGSize(width: NotchSizes.openWidth, height: NotchSizes.openHeight)
         }
@@ -91,8 +91,8 @@ struct FridayView: View {
 
         // Always show the expanded content if an alert is active (even during contraction to dismissed)
         if state.activeAlert != nil && state.displayState != .open {
-            MiniNotchView()
-                .frame(width: notchSize.width, height: notchH)
+            HorizontalNotchView()
+                .frame(width: notchSize.width, height: notchSize.height)
         } else {
             switch state.displayState {
             case .dismissed:
@@ -101,7 +101,7 @@ struct FridayView: View {
                     .transition(.opacity)
 
             case .mini:
-                MiniNotchView()
+                HorizontalNotchView()
                     .frame(width: 440, height: notchH)
                     .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .top)))
 
@@ -112,7 +112,7 @@ struct FridayView: View {
                         .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .top)))
                 } else {
                     HorizontalNotchView()
-                        .padding(.top, state.isActive || state.hasMusicTrack ? notchH : 0)
+                        
                         .frame(
                             width:  state.standardWidth,
                             height: state.isActive || state.hasMusicTrack ? notchH * 2.2 : notchH
