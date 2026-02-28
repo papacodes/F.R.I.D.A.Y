@@ -18,6 +18,8 @@ final class WakeWordEngine {
     private var sessionRestartTimer: Timer?
 
     private(set) var isRunning = false
+    /// Tracks intent to be running — lets stop() cancel a pending retry before it fires.
+    private var wantsToRun = false
 
     // Phrases that trigger Friday. "hey" prefix dramatically reduces false positives
     // from everyday speech ("on Friday", "next Friday", etc.)
@@ -39,10 +41,15 @@ final class WakeWordEngine {
     }
 
     func start() {
+        wantsToRun = true
         guard !isRunning else { return }
         guard speechRecognizer?.isAvailable == true else {
-            // Recognizer not ready yet — retry shortly
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.start() }
+            // Recognizer not ready — retry, but only if stop() hasn't been called in the meantime
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard self?.wantsToRun == true else { return }
+                self?.start()
+            }
             return
         }
         isRunning = true
@@ -51,6 +58,7 @@ final class WakeWordEngine {
     }
 
     func stop() {
+        wantsToRun = false
         guard isRunning else { return }
         isRunning = false
         sessionRestartTimer?.invalidate()

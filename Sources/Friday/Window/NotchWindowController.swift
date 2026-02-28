@@ -55,14 +55,21 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
             Task { @MainActor in self?.collapseOrDismiss() }
         }
         NotificationCenter.default.addObserver(forName: .fridayExpand, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.goOpen(silent: true, userInitiated: true) }
+            Task { @MainActor in
+                switch FridayState.shared.displayState {
+                case .dismissed, .mini: self?.goMiniExpanded(userInitiated: true, wake: true)
+                case .miniExpanded:     self?.goOpen(silent: true, userInitiated: true)
+                case .open:             break
+                }
+            }
         }
 
-        // WAKE WORD: "Hey Friday" detected — summon the full panel and wake Gemini
+        // WAKE WORD: "Hey Friday" detected — wake into miniExpanded (not full open)
         NotificationCenter.default.addObserver(forName: .fridayWakeWord, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
-                guard FridayState.shared.displayState != .open else { return }
-                self?.goOpen()
+                let ds = FridayState.shared.displayState
+                guard ds == .dismissed || ds == .mini else { return }
+                self?.goMiniExpanded(wake: true)
             }
         }
         
@@ -79,11 +86,11 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
                     self?.intentionalHoverTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { _ in
                         Task { @MainActor in
                             if let self = self, self.isMouseInside {
-                                self.goMiniExpanded(userInitiated: true) // Treat hover as user initiated mini expansion
+                                self.goMini()  // hover → mini pill only, wake engine stays active
                             }
                         }
                     }
-                } else if state.displayState == .miniExpanded && state.hasMusicTrack {
+                } else if (state.displayState == .mini || state.displayState == .miniExpanded) && state.hasMusicTrack {
                     self?.triggerHaptic()
                 }
             }
@@ -119,15 +126,13 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
     
     private func checkAndDismiss() {
         let state = FridayState.shared
-        // Collapse logic based on new requirements:
-        // Collapse to miniExpanded if active or music, unless user-initiated expansion is true (should stay open until dismissed)
-        // Dismiss fully only when truly inactive and not user expanded.
-
         withAnimation(.interactiveSpring(response: 0.8, dampingFraction: 0.9)) {
             if state.isUserInitiatedExpansion {
-                // Do nothing, wait for explicit dismiss
-            } else if state.isActive || state.hasMusicTrack || isMouseInside {
+                // Do nothing — wait for explicit dismiss
+            } else if state.isActive || state.isDevTaskRunning {
                 state.displayState = .miniExpanded
+            } else if state.hasMusicTrack || isMouseInside {
+                state.displayState = .mini
             } else {
                 state.displayState = .dismissed
             }
@@ -138,8 +143,9 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
 
     func toggle() {
         switch FridayState.shared.displayState {
-        case .dismissed, .miniExpanded, .alert: goOpen(userInitiated: true)
-        case .open:                             collapseOrDismiss()
+        case .dismissed, .mini: goMiniExpanded(userInitiated: true, wake: true)
+        case .miniExpanded:     goOpen(silent: true, userInitiated: true)
+        case .open:             goMiniExpanded()    // stay in session, just collapse the panel
         }
     }
 
@@ -167,17 +173,25 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    func goMiniExpanded(userInitiated: Bool = false) {
-        let fromOpen = FridayState.shared.displayState == .open
+    func goMini() {
+        FridayState.shared.recordActivity()
+        withAnimation(.interactiveSpring(response: 0.38, dampingFraction: 0.8)) {
+            FridayState.shared.displayState = .mini
+        }
+        triggerHaptic()
+        // Wake engine keeps running — user hovered, Friday not yet active
+    }
+
+    func goMiniExpanded(userInitiated: Bool = false, wake: Bool = false) {
+        WakeWordEngine.shared.stop()
         FridayState.shared.recordActivity()
         FridayState.shared.isUserInitiatedExpansion = userInitiated
         withAnimation(.interactiveSpring(response: 0.38, dampingFraction: 0.8)) {
             FridayState.shared.displayState = .miniExpanded
-            triggerHaptic()
         }
-        Task {
-            if fromOpen { try? await Task.sleep(nanoseconds: 600_000_000) }
-            WakeWordEngine.shared.start()
+        triggerHaptic()
+        if wake {
+            Task { await AppDelegate.pipeline.wake() }
         }
     }
 
@@ -201,6 +215,11 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
         }
         AppDelegate.pipeline.stop()
         WakeWordEngine.shared.stop()
+        // Let the pipeline release the mic, then restart wake engine so "Hey Friday" works again
+        Task {
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            WakeWordEngine.shared.start()
+        }
     }
 
     // MARK: - Private
@@ -212,10 +231,9 @@ final class NotchWindowController: NSObject, NSWindowDelegate {
         let notchH = state.closedNotchSize.height
         let visibleHeight: CGFloat
         switch state.displayState {
-        case .dismissed: visibleHeight = notchH
-        case .alert:     return true
-        case .miniExpanded: visibleHeight = state.isActive || state.hasMusicTrack ? notchH * 2.2 : notchH
-        case .open:      visibleHeight = NotchSizes.openHeight
+        case .dismissed, .mini: visibleHeight = notchH
+        case .miniExpanded:     visibleHeight = state.isActive || state.hasMusicTrack ? notchH * 2.2 : notchH
+        case .open:             visibleHeight = NotchSizes.openHeight
         }
         let checkRect = NSRect(
             x: frame.minX,

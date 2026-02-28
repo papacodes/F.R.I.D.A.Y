@@ -18,11 +18,13 @@ struct FridayView: View {
         let h = state.closedNotchSize.height
         switch state.displayState {
         case .dismissed: return state.closedNotchSize
-        case .alert:     return CGSize(width: 440, height: h)
+        case .mini:
+            let w = state.activeAlert?.isInteractive == false ? state.closedNotchSize.width + 60 : state.closedNotchSize.width + 60
+            return CGSize(width: w, height: h)
         case .miniExpanded:
-            // Mini expanded height is standard unless active, as defined in NotchWindowController
             let targetHeight = state.isActive || state.hasMusicTrack ? h * 2.2 : h
-            return CGSize(width: state.standardWidth, height: targetHeight)
+            let w = state.activeAlert != nil ? 440 : state.standardWidth
+            return CGSize(width: w, height: targetHeight)
         case .open:
             return CGSize(width: NotchSizes.openWidth, height: NotchSizes.openHeight)
         }
@@ -33,7 +35,11 @@ struct FridayView: View {
     }
 
     private var bottomCornerRadius: CGFloat {
-        state.displayState == .open ? 32 : 14
+        switch state.displayState {
+        case .open:        return 32
+        case .mini:        return 20  // rounder pill for the small state
+        default:           return 14
+        }
     }
 
     // MARK: - Body
@@ -44,12 +50,8 @@ struct FridayView: View {
             Color.black
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    if state.displayState == .open {
-                        // Smart collapse — goes to mini if Friday is active, dismissed if idle
-                        NotificationCenter.default.post(name: .fridayCollapse, object: nil)
-                    } else {
-                        NotificationCenter.default.post(name: .fridayExpand, object: nil)
-                    }
+                    // State-aware cycle: dismissed/mini → miniExpanded → open → miniExpanded
+                    NotificationCenter.default.post(name: .fridayToggle, object: nil)
                 }
                 .frame(width: notchSize.width, height: notchSize.height)
                 .clipShape(
@@ -65,7 +67,7 @@ struct FridayView: View {
                     )
                     .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
                 )
-                .shadow(color: .black.opacity(state.displayState == .dismissed ? 0 : 0.6), radius: 40, x: 0, y: 20)
+                .shadow(color: .black.opacity(state.displayState == .dismissed ? 0 : (state.displayState == .mini ? 0.3 : 0.6)), radius: 40, x: 0, y: 20)
                 .animation(spring, value: state.displayState)
                 .animation(spring, value: state.isActive)
                 .animation(spring, value: state.hasMusicTrack)
@@ -91,25 +93,30 @@ struct FridayView: View {
 
         case .dismissed:
             NotchIdleIndicator()
-                .frame(
-                    width:  state.closedNotchSize.width,
-                    height: notchH
-                )
+                .frame(width: state.closedNotchSize.width, height: notchH)
                 .transition(.opacity)
 
-        case .alert:
-            AlertNotchView()
-                .frame(width: 440, height: notchH)
-                .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .top)))
+        case .mini:
+            // Small pill — idle bars or simple alert icon, no text
+            NotchIdleIndicator()
+                .frame(width: state.closedNotchSize.width, height: notchH)
+                .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .top)))
 
         case .miniExpanded:
-            HorizontalNotchView()
-                .padding(.top, state.isActive || state.hasMusicTrack ? notchH : 0)
-                .frame(
-                    width:  state.standardWidth,
-                    height: state.isActive || state.hasMusicTrack ? notchH * 2.2 : notchH
-                )
-                .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
+            // Interactive alert overlays the pill content
+            if state.activeAlert != nil {
+                AlertNotchView()
+                    .frame(width: 440, height: notchH)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .top)))
+            } else {
+                HorizontalNotchView()
+                    .padding(.top, state.isActive || state.hasMusicTrack ? notchH : 0)
+                    .frame(
+                        width:  state.standardWidth,
+                        height: state.isActive || state.hasMusicTrack ? notchH * 2.2 : notchH
+                    )
+                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
+            }
 
         case .open:
             NotchExpandedView()

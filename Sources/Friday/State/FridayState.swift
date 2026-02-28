@@ -30,15 +30,18 @@ struct SystemAlert: Identifiable, Equatable {
     let style: RightStyle
     let isCharging: Bool
 
+    /// Whether this alert warrants miniExpanded (shows bar/ring/text) or just mini (silent pill)
+    let isInteractive: Bool
+
     static func volume(_ level: Float) -> SystemAlert {
         SystemAlert(id: "volume",
                     icon: level <= 0 ? "speaker.slash.fill" : "speaker.wave.2.fill",
-                    value: level, color: .white, duration: 2.0, style: .bar, isCharging: false)
+                    value: level, color: .white, duration: 2.0, style: .bar, isCharging: false, isInteractive: true)
     }
 
     static func brightness(_ level: Float) -> SystemAlert {
         SystemAlert(id: "brightness", icon: "sun.max.fill",
-                    value: level, color: .white, duration: 2.0, style: .bar, isCharging: false)
+                    value: level, color: .white, duration: 2.0, style: .bar, isCharging: false, isInteractive: true)
     }
 
     static func battery(_ level: Int, charging: Bool) -> SystemAlert {
@@ -46,23 +49,23 @@ struct SystemAlert: Identifiable, Equatable {
         return SystemAlert(id: "battery",
                            icon: charging ? "bolt.fill" : "battery.100",
                            value: Float(level) / 100.0, color: color,
-                           duration: 3.0, style: .battery, isCharging: charging)
+                           duration: 3.0, style: .battery, isCharging: charging, isInteractive: false)
     }
 
     static func airpods(name: String, level: Int) -> SystemAlert {
         SystemAlert(id: "airpods", icon: "airpodspro",
                     value: Float(level) / 100.0, color: .white,
-                    duration: 4.0, style: .ring, isCharging: false)
+                    duration: 4.0, style: .ring, isCharging: false, isInteractive: true)
     }
 }
 
 // MARK: - Display state
 
 enum NotchDisplayState: Equatable {
-    case alert       // System Notification (Volume, Brightness, etc.)
-    case dismissed   // Physical notch only
-    case miniExpanded    // Horizontal expansion, based on activity
-    case open        // Full vertical expansion, user-initiated
+    case dismissed      // Physical notch only — wake engine active
+    case mini           // Small pill, no text — hover, simple alerts, launch idle
+    case miniExpanded   // Pill with content — Friday active, interactive alerts
+    case open           // Full vertical panel — user-initiated
 }
 
 // MARK: - Activity Item
@@ -136,7 +139,7 @@ final class FridayState: ObservableObject {
             }
             .combineLatest($isPlayingMusic)
             .sink { [weak self] (isActive, isPlayingMusic) in
-                self?.handleActivityChange(isActive || isPlayingMusic)
+                self?.handleActivityChange(isActive: isActive, isPlayingMusic: isPlayingMusic)
             }
             .store(in: &cancellables)
         setupPeripheralObservation()
@@ -163,13 +166,13 @@ final class FridayState: ObservableObject {
     // MARK: Window
     @Published var displayState: NotchDisplayState = .dismissed {
         didSet {
-            if displayState == .dismissed || displayState == .miniExpanded {
+            if displayState != .open {
                 isUserInitiatedExpansion = false
             }
-            if displayState != .dismissed {
-                startDismissTimer()
-            } else {
+            if displayState == .dismissed {
                 dismissTimer?.invalidate()
+            } else {
+                startDismissTimer()
             }
         }
     }
@@ -179,9 +182,7 @@ final class FridayState: ObservableObject {
 
     // MARK: Alerts
     @Published var activeAlert: SystemAlert? = nil
-    private var preAlertState: NotchDisplayState = .dismissed
     private var alertTimer: Timer?
-    private var alertForcedStandard = false
 
     // MARK: Navigation
     @Published var activeTab: NotchTab = .home
@@ -207,15 +208,19 @@ final class FridayState: ObservableObject {
     var isActive: Bool { isListening || isThinking || isSpeaking || isDevTaskRunning }
     var isExpanded: Bool { displayState == .open }
 
-    private func handleActivityChange(_ isActiveOrMusic: Bool) {
+    private func handleActivityChange(isActive: Bool, isPlayingMusic: Bool) {
         withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
-            if isActiveOrMusic {
-                // When active, transition to miniExpanded if not already open by user
-                if displayState == .dismissed {
+            if isActive {
+                // Friday is working — show miniExpanded unless already in open
+                if displayState == .dismissed || displayState == .mini {
                     displayState = .miniExpanded
                 }
+            } else if isPlayingMusic {
+                // Music only — mini pill is enough
+                if displayState == .dismissed {
+                    displayState = .mini
+                }
             } else {
-                // When inactive, start timer to collapse to miniExpanded or dismissed
                 startDismissTimer()
             }
         }
@@ -226,12 +231,9 @@ final class FridayState: ObservableObject {
         dismissTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
             DispatchQueue.main.async {
                 withAnimation(.spring(response: 0.8, dampingFraction: 0.9)) {
-                    // Collapse to miniExpanded if not active and not user expanded
-                    if !(self?.isActive ?? false) && !(self?.hasMusicTrack ?? false) && !(self?.isUserInitiatedExpansion ?? false) {
-                        self?.displayState = .dismissed // Changed to dismissed based on consolidated logic
-                    } else if !(self?.isUserInitiatedExpansion ?? false) {
-                         self?.displayState = .miniExpanded // Stay in miniExpanded if active or music, but not user expanded
-                    }
+                    guard let self else { return }
+                    if self.isActive || self.isUserInitiatedExpansion { return }
+                    self.displayState = self.hasMusicTrack ? .mini : .dismissed
                 }
             }
         }
@@ -254,15 +256,22 @@ final class FridayState: ObservableObject {
     func postAlert(_ alert: SystemAlert) {
         alertTimer?.invalidate()
         withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-            if self.displayState != .alert { self.preAlertState = self.displayState }
             self.activeAlert = alert
-            self.displayState = .alert
+            // Route based on interactivity — don't interrupt open state
+            switch displayState {
+            case .dismissed:
+                displayState = alert.isInteractive ? .miniExpanded : .mini
+            case .mini where alert.isInteractive:
+                displayState = .miniExpanded
+            default:
+                break  // overlay alert content in current state
+            }
         }
         alertTimer = Timer.scheduledTimer(withTimeInterval: alert.duration, repeats: false) { _ in
             Task { @MainActor in
                 withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
                     self.activeAlert = nil
-                    self.displayState = self.preAlertState
+                    // Dismiss timer will handle natural collapse back
                 }
             }
         }

@@ -330,7 +330,7 @@ class SystemNotificationManager: ObservableObject {
             Task { @MainActor in
                 FridayState.shared.postAlert(SystemAlert(
                     id: "wake", icon: "sun.max.fill", value: 1.0, color: Color.cyan,
-                    duration: 2.0, style: SystemAlert.RightStyle.bar, isCharging: false
+                    duration: 2.0, style: SystemAlert.RightStyle.bar, isCharging: false, isInteractive: true
                 ))
             }
         }
