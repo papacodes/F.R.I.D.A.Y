@@ -19,8 +19,8 @@ struct FridayView: View {
         switch state.displayState {
         case .dismissed: return state.closedNotchSize
         case .mini:
-            // Unify canvas width with alerts (440)
-            return CGSize(width: 440, height: h)
+            // Unify canvas width with alerts (440) + 2px overshoot for coverage
+            return CGSize(width: 440, height: h + 2)
         case .miniExpanded:
             let targetHeight = state.isActive || state.hasMusicTrack ? h * 2.2 : h
             let w = state.activeAlert != nil ? 440 : state.standardWidth
