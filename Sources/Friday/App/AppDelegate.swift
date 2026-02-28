@@ -4,7 +4,7 @@ import Foundation // Import Foundation for file management
 
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
-    private var windowController: NotchWindowController?
+    private var windowController: NotchUIEngine?
     private var hotkeyManager: HotkeyManager?
     private var accessibilityCheckTimer: Timer?
 
@@ -23,7 +23,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func launch() {
         loadMemory() // Load long-term memory context on launch
 
-        windowController = NotchWindowController()
+        windowController = NotchUIEngine()
 
         hotkeyManager = HotkeyManager { [weak self] in
             Task { @MainActor in

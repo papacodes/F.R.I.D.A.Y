@@ -260,9 +260,10 @@ final class FridayState: ObservableObject {
             // Route based on interactivity — don't interrupt open state
             switch displayState {
             case .dismissed:
-                displayState = alert.isInteractive ? .miniExpanded : .mini
+                displayState = .mini
             case .mini where alert.isInteractive:
-                displayState = .miniExpanded
+                // Keep in mini, MiniNotchView handles it now with the wider 440 canvas
+                break
             default:
                 break  // overlay alert content in current state
             }

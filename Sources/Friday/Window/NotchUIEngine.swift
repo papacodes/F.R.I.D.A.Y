@@ -3,7 +3,7 @@ import SwiftUI
 import Combine
 
 @MainActor
-final class NotchWindowController: NSObject, NSWindowDelegate {
+final class NotchUIEngine: NSObject, NSWindowDelegate {
     private let panel: NotchWindow
     private let notchSpace = CGSSpace(level: 2147483647)
 

@@ -19,8 +19,8 @@ struct FridayView: View {
         switch state.displayState {
         case .dismissed: return state.closedNotchSize
         case .mini:
-            let w = state.activeAlert?.isInteractive == false ? state.closedNotchSize.width + 60 : state.closedNotchSize.width + 60
-            return CGSize(width: w, height: h)
+            // Unify canvas width with alerts (440)
+            return CGSize(width: 440, height: h)
         case .miniExpanded:
             let targetHeight = state.isActive || state.hasMusicTrack ? h * 2.2 : h
             let w = state.activeAlert != nil ? 440 : state.standardWidth
@@ -97,9 +97,8 @@ struct FridayView: View {
                 .transition(.opacity)
 
         case .mini:
-            // Small pill — idle bars or simple alert icon, no text
-            NotchIdleIndicator()
-                .frame(width: state.closedNotchSize.width, height: notchH)
+            MiniNotchView()
+                .frame(width: 440, height: notchH)
                 .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .top)))
 
         case .miniExpanded:
