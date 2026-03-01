@@ -2,11 +2,18 @@ import Foundation
 
 // Dev brain — handles software development tasks via Claude Code CLI.
 // Called only when Gemini routes a query via the execute_dev_task tool.
-// Always runs with the notes workspace as context so Claude has project history.
-@MainActor
-final class ClaudeProcess {
+// Runs from the specified project directory so Claude has full code context.
+//
+// NOT @MainActor — background callbacks (readabilityHandler, terminationHandler)
+// run on dispatch queues and must not inherit actor isolation. The GeminiVoicePipeline's
+// @MainActor context serializes all calls to this class in practice.
+final class ClaudeProcess: @unchecked Sendable {
 
     private var hasSession = false
+    private var taskCount = 0
+    /// After this many tasks, silently drop --continue and start a fresh Claude session.
+    /// Prevents unbounded context growth from accumulated tool calls across many dev tasks.
+    private let sessionResetThreshold = 8
 
     private static let claudePath: String = {
         let p = Process()
@@ -26,16 +33,31 @@ final class ClaudeProcess {
 
     private static let notesDirectory = "/Users/papa/Documents/notes"
 
-    private let preamble = "[You are Friday's dev backend. Return a brief spoken summary of what was done — no markdown, no preamble.] "
+    /// Prefixed to the first message in each fresh session.
+    /// Keeps Claude terse so the result fed back to Gemini stays small.
+    private let preamble = "[You are Friday's dev backend. Each narration step ≤8 words. Final answer: 1-3 plain sentences only — no markdown, no code blocks, no preamble.] "
 
-    /// onProgress is called from a background thread — callers must dispatch to MainActor themselves.
-    func ask(_ message: String, onProgress: @escaping @Sendable (String) -> Void) async throws -> String {
+    /// Ask Claude Code to perform a development task.
+    /// - Parameters:
+    ///   - message: The task description
+    ///   - directory: Working directory (defaults to notes). Pass the project path for code tasks.
+    ///   - maxTurns: Turn budget. Use 5 for lookups, 15 for changes. Defaults to 15.
+    ///   - onProgress: Called from a background thread as Claude streams output — callers dispatch to MainActor.
+    func ask(_ message: String, directory: String? = nil, maxTurns: Int = 15, onProgress: @escaping @Sendable (String) -> Void) async throws -> String {
         var args: [String] = [
             "--print",
             "--model", "claude-sonnet-4-6",
             "--output-format", "stream-json",
-            "--max-turns", "10"
+            "--max-turns", "\(maxTurns)"
         ]
+
+        // Auto-reset: drop --continue after sessionResetThreshold tasks to prevent
+        // Claude's own context from growing unboundedly across many execute_dev_task calls.
+        if hasSession && taskCount >= sessionResetThreshold {
+            print("Friday: ClaudeProcess session reset after \(taskCount) tasks")
+            hasSession = false
+            taskCount = 0
+        }
 
         if hasSession {
             args += ["--continue", message]
@@ -43,31 +65,39 @@ final class ClaudeProcess {
             args.append(preamble + message)
         }
 
-        print("Friday: → claude '\(message.prefix(60))'")
-        let response = try await runStreaming(args: args, onProgress: onProgress)
+        print("Friday: → claude \(directory ?? "notes") '\(message.prefix(60))'")
+        let response = try await runStreaming(args: args, directory: directory, onProgress: onProgress)
         print("Friday: ← '\(response.prefix(80))'")
 
-        if !response.isEmpty { hasSession = true }
+        if !response.isEmpty {
+            hasSession = true
+            taskCount += 1
+        }
         return response
     }
 
-    func reset() { hasSession = false }
+    func reset() { hasSession = false; taskCount = 0 }
 
     // MARK: - Private
 
     private func runStreaming(
         args: [String],
+        directory: String?,
         onProgress: @escaping @Sendable (String) -> Void
     ) async throws -> String {
         try await withCheckedThrowingContinuation { cont in
             let p = Process()
             p.executableURL = URL(fileURLWithPath: Self.claudePath)
             p.arguments = args
-            p.currentDirectoryURL = URL(fileURLWithPath: Self.notesDirectory)
+
+            // Use the provided project directory, or fall back to notes
+            let workDir = directory.map { NSString(string: $0).expandingTildeInPath } ?? Self.notesDirectory
+            p.currentDirectoryURL = URL(fileURLWithPath: workDir)
             p.standardInput = FileHandle.nullDevice
 
+            // Strip only CLAUDE_SESSION vars to prevent context bleed — keep auth vars intact
             var env = ProcessInfo.processInfo.environment
-            for key in env.keys where key.hasPrefix("CLAUDE") { env.removeValue(forKey: key) }
+            env.removeValue(forKey: "CLAUDE_SESSION_ID")
             p.environment = env
 
             let stdout = Pipe()
@@ -80,18 +110,17 @@ final class ClaudeProcess {
             nonisolated(unsafe) var lastOutputTime = Date()
             nonisolated(unsafe) var done = false
 
-            // Rolling timeout: terminate if no stdout for 120s
+            // Rolling timeout: terminate if no stdout for 180s (generous for large tasks)
             let timeoutTimer = DispatchSource.makeTimerSource(queue: .global())
-            timeoutTimer.schedule(deadline: .now() + 15, repeating: 15)
+            timeoutTimer.schedule(deadline: .now() + 30, repeating: 30)
             timeoutTimer.setEventHandler {
-                if !done && Date().timeIntervalSince(lastOutputTime) > 120 {
-                    print("Friday: claude timed out — no output for 120s")
+                if !done && Date().timeIntervalSince(lastOutputTime) > 180 {
+                    print("Friday: claude timed out — no output for 180s")
                     p.terminate()
                 }
             }
             timeoutTimer.resume()
 
-            // Stream stdout line by line as Claude works
             stdout.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
                 guard !data.isEmpty else { return }
@@ -100,7 +129,6 @@ final class ClaudeProcess {
                 guard let chunk = String(data: data, encoding: .utf8) else { return }
                 lineBuffer += chunk
 
-                // Process all complete newline-terminated lines
                 while let newlineIdx = lineBuffer.firstIndex(of: "\n") {
                     let line = String(lineBuffer[lineBuffer.startIndex..<newlineIdx])
                     lineBuffer = String(lineBuffer[lineBuffer.index(after: newlineIdx)...])
@@ -118,7 +146,6 @@ final class ClaudeProcess {
                 timeoutTimer.cancel()
                 stdout.fileHandleForReading.readabilityHandler = nil
 
-                // Flush remaining buffer
                 if !lineBuffer.isEmpty, let parsed = parseStreamLine(lineBuffer) {
                     if let result = parsed.result { finalResult = result }
                 }
@@ -141,7 +168,7 @@ final class ClaudeProcess {
     }
 }
 
-// MARK: - stream-json parsing (free function so it can be called from nonisolated context)
+// MARK: - stream-json parsing
 
 private struct ParsedLine {
     var result: String?
@@ -158,7 +185,7 @@ private func parseStreamLine(_ line: String) -> ParsedLine? {
 
     switch type {
     case "system":
-        parsed.progress = "Claude starting..."
+        parsed.progress = "Starting up..."
 
     case "assistant":
         guard let msg = obj["message"] as? [String: Any],
@@ -167,13 +194,16 @@ private func parseStreamLine(_ line: String) -> ParsedLine? {
 
         for part in content {
             let partType = part["type"] as? String ?? ""
-            if partType == "tool_use", let name = part["name"] as? String {
-                parsed.progress = "→ \(name)"
-                break  // report first tool per message
+            if partType == "tool_use" {
+                let name = part["name"] as? String ?? ""
+                let input = part["input"] as? [String: Any] ?? [:]
+                parsed.progress = humanReadableToolUse(name: name, input: input)
+                break
             } else if partType == "text", let text = part["text"] as? String {
                 let snippet = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !snippet.isEmpty {
-                    parsed.progress = String(snippet.prefix(70))
+                    // Claude's own narration — pass it through as progress
+                    parsed.progress = String(snippet.prefix(80))
                 }
             }
         }
@@ -183,7 +213,7 @@ private func parseStreamLine(_ line: String) -> ParsedLine? {
             parsed.result = result
         }
         if let isError = obj["isError"] as? Bool, isError {
-            parsed.progress = "✗ Error"
+            parsed.progress = "Error occurred"
         }
 
     default:
@@ -191,4 +221,30 @@ private func parseStreamLine(_ line: String) -> ParsedLine? {
     }
 
     return parsed
+}
+
+/// Converts a raw tool call into a readable status line for the activity feed.
+private func humanReadableToolUse(name: String, input: [String: Any]) -> String {
+    switch name {
+    case "read_file", "read":
+        let path = (input["path"] as? String) ?? (input["file_path"] as? String) ?? ""
+        return "Reading \(path.isEmpty ? "file" : URL(fileURLWithPath: path).lastPathComponent)"
+    case "write_file", "write":
+        let path = (input["path"] as? String) ?? (input["file_path"] as? String) ?? ""
+        return "Writing \(path.isEmpty ? "file" : URL(fileURLWithPath: path).lastPathComponent)"
+    case "list_directory", "list_files", "glob":
+        let path = (input["path"] as? String) ?? (input["pattern"] as? String) ?? ""
+        return "Listing \(path.isEmpty ? "directory" : URL(fileURLWithPath: path).lastPathComponent)"
+    case "bash", "run_shell", "execute":
+        let cmd = (input["command"] as? String) ?? ""
+        return cmd.isEmpty ? "Running command" : String(cmd.prefix(50))
+    case "grep", "search", "search_files":
+        let pattern = (input["pattern"] as? String) ?? (input["query"] as? String) ?? ""
+        return "Searching: \(pattern.prefix(40))"
+    case "edit_file", "str_replace_editor":
+        let path = (input["path"] as? String) ?? (input["file_path"] as? String) ?? ""
+        return "Editing \(path.isEmpty ? "file" : URL(fileURLWithPath: path).lastPathComponent)"
+    default:
+        return name.replacingOccurrences(of: "_", with: " ").capitalized
+    }
 }

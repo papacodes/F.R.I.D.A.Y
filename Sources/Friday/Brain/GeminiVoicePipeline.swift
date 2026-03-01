@@ -7,6 +7,9 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
     private let state: FridayState
     private let audioProcessor = AudioProcessor()
+    /// Per-project ClaudeProcess instances. Keyed by project path (or "default" for path-less tasks).
+    /// Each instance maintains its own session continuity, allowing concurrent tasks across projects.
+    private var claudeByProject: [String: ClaudeProcess] = [:]
 
     private var wsTask: URLSessionWebSocketTask?
     private var urlSession: URLSession?
@@ -17,6 +20,19 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     private var reconnectAttempts = 0
     /// Set before any intentional disconnect — prevents receiveLoop from triggering reconnect.
     private var intentionalStop = false
+
+    // Each receiveLoop captures its own ID at launch. When refreshSession invalidates the socket,
+    // it stamps a new ID — stale loops see the mismatch and exit without triggering reconnect.
+    private var receiveLoopId = UUID()
+
+    // Session health — proactive context limit awareness.
+    // Gemini Live sessions drop at ~15 min or after heavy context use (long tool results).
+    // We warn at 10 min or 20 turns and offer a graceful refresh.
+    private var sessionStartTime: Date?
+    private var turnCount = 0
+    private var hasWarnedAboutContext = false
+    private let sessionWarnMinutes: TimeInterval = 10 * 60
+    private let sessionWarnTurns = 20
 
     private let outputEngine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
@@ -176,10 +192,20 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             : "\n\n---\n\n\(state.longTermMemoryContext)"
 
         let instructions = """
-        You are Friday, Papa's macOS AI assistant living in his MacBook's notch.
-        Dev capabilities: You have direct file system and shell access via read_file, write_file, list_directory, and run_shell. Code lives in ~/projects/. Notes live in ~/Documents/notes/.
-        Shell: run_shell runs any zsh command. Always pass a directory when the command is project-specific.
+        You are Friday, Papa's macOS AI assistant living in his MacBook's notch. Be concise, natural, and direct — no filler phrases.
+
+        DEV TOOLS:
+        - execute_dev_task: Use for tasks requiring code understanding, multi-step analysis, or making changes to a project. Always pass project_path (e.g. ~/projects/friday). Keep tasks tightly scoped — one specific question or change, not "look at the whole project". Claude Code handles the execution and reports back.
+        - read_file, write_file, list_directory: Use for direct notes and simple single-file reads. Not for code projects.
+        - run_shell: Use for targeted searches (grep, find) and quick one-liners. Always pass directory for project commands.
+
+        IMPORTANT: Never read entire project directories through file tools — that causes rate limits. For large codebases, use execute_dev_task with a specific question, or run_shell with grep.
+
+        Code lives in ~/projects/. Notes live in ~/Documents/notes/.
         Call disconnect_session when Papa says goodbye or the conversation is finished.
+        Call refresh_session when Papa says "reconnect" or "fresh session", or when you warn him about context limits. Always call manage_notes to save session notes BEFORE calling refresh_session.
+
+        UI CONTROL: You are aware of your own UI. Use get_ui_state to check what's showing before taking action. Use control_ui to expand, collapse, switch tabs, or dismiss completed tasks. When Papa asks about music, switch to the music tab. When he asks about calendar or schedule, switch to the calendar tab. If he asks you to expand and you're already expanded, tell him. If a skill fails (e.g. calendar add), tell Papa and suggest opening the relevant app manually.
         \(knowledgeBase)
         """
 
@@ -194,11 +220,13 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 ),
                 systemInstruction: SystemInstruction(parts: [TextPart(text: instructions)]),
                 tools: [ToolsList(functionDeclarations: [
+                    Self.executeDevTaskTool,
                     Self.readFileTool, Self.writeFileTool, Self.listDirectoryTool, Self.runShellTool,
                     Self.weatherTool, Self.timeTool, Self.batteryTool,
                     Self.mapTool, Self.searchTool, Self.musicTool,
                     Self.playlistTool, Self.notesTool, Self.remindersTool,
-                    Self.calendarTool, Self.disconnectTool
+                    Self.calendarTool, Self.disconnectTool, Self.refreshSessionTool,
+                    Self.getUiStateTool, Self.controlUiTool
                 ])]
             )
         )
@@ -206,6 +234,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func receiveLoop() async {
+        let myId = receiveLoopId  // stale loops see ID mismatch and bail cleanly
         while let ws = wsTask, ws.state == .running {
             do {
                 let message = try await ws.receive()
@@ -217,13 +246,13 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 @unknown default: break
                 }
             } catch {
-                if wsTask != nil { print("Friday: WebSocket receive error — \(error)") }
+                if myId == receiveLoopId { print("Friday: WebSocket receive error — \(error)") }
                 break
             }
         }
 
-        // Unintentional drop — reconnect with backoff (skip if we stopped intentionally)
-        if !isConnecting && !intentionalStop { await reconnect() }
+        // Reconnect only if this is the current loop (not a stale one from a prior session)
+        if myId == receiveLoopId && !isConnecting && !intentionalStop { await reconnect() }
     }
 
     private func handleServer(_ data: Data) async {
@@ -242,6 +271,9 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 // Stable session confirmed — check before resetting so we know if this is a reconnect
                 let wasReconnect = reconnectAttempts > 0
                 reconnectAttempts = 0
+                sessionStartTime = Date()
+                turnCount = 0
+                hasWarnedAboutContext = false
                 audioProcessor.start(ws: wsTask) { [weak self] active, rms in
                     DispatchQueue.main.async {
                         self?.state.update(\.isListening, to: active)
@@ -256,9 +288,11 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
             if let content = msg.serverContent {
                 if content.turnComplete == true {
+                    turnCount += 1
                     state.update(\.isSpeaking, to: false)
                     audioProcessor.isMuted = false
                     state.update(\.volume, to: 0.0)
+                    checkSessionHealth()
                     // Intentional stop (voice goodbye or UI dismiss) — wait for audio to finish then close
                     if intentionalStop {
                         Task { [weak self] in
@@ -318,6 +352,11 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         }
         let rms = sqrt(sum / Float(max(frameCount, 1)))
         state.update(\.volume, to: rms)
+
+        // Restart engine if macOS interrupted it during a long tool call
+        if !outputEngine.isRunning { try? outputEngine.start() }
+        if !playerNode.isPlaying { playerNode.play() }
+
         playerNode.scheduleBuffer(buffer)
     }
 
@@ -328,16 +367,16 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         switch call.name {
         case "read_file":
             if let path = call.args["path"] {
-                state.update(\.isDevTaskRunning, to: true)
+                state.beginDevTask()
                 result = FileSystemSkill.readFile(path: path)
-                state.update(\.isDevTaskRunning, to: false)
+                state.endDevTask()
             }
 
         case "write_file":
             if let path = call.args["path"], let content = call.args["content"] {
-                state.update(\.isDevTaskRunning, to: true)
+                state.beginDevTask()
                 result = FileSystemSkill.writeFile(path: path, content: content)
-                state.update(\.isDevTaskRunning, to: false)
+                state.endDevTask()
             }
 
         case "list_directory":
@@ -347,9 +386,9 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
         case "run_shell":
             if let command = call.args["command"] {
-                state.update(\.isDevTaskRunning, to: true)
+                state.beginDevTask()
                 result = await ShellSkill.run(command, directory: call.args["directory"])
-                state.update(\.isDevTaskRunning, to: false)
+                state.endDevTask()
             }
 
         case "get_weather":
@@ -408,6 +447,105 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                     result = CalendarSkill.getSchedule(forDate: d)
                 }
             }
+        case "execute_dev_task":
+            if let task = call.args["task"] {
+                let projectPath = call.args["project_path"]
+                let projectKey = projectPath ?? "default"
+                let taskLabel = projectPath
+                    .map { URL(fileURLWithPath: $0.replacingOccurrences(of: "~", with: "")).lastPathComponent }
+                    ?? "task"
+                let claude = claudeForProject(projectKey)
+
+                state.startTask(id: projectKey, label: taskLabel)
+                state.addActivity(type: .info, title: "Claude Code", subtitle: task)
+
+                let maxTurns = call.args["max_turns"].flatMap { Int($0) } ?? 15
+                do {
+                    result = try await claude.ask(task, directory: projectPath, maxTurns: maxTurns) { progress in
+                        Task { @MainActor in
+                            FridayState.shared.updateTask(id: projectKey, step: progress)
+                        }
+                    }
+                    state.completeTask(id: projectKey)
+                    state.update(\.transcript, to: "")
+                    // Truncate before sending back — long results burn context fast and cause disconnects.
+                    // Keep head (context) + tail (spoken summary the preamble asks Claude to put last).
+                    let limit = 1500
+                    if result.count > limit {
+                        let head = String(result.prefix(400))
+                        let tail = String(result.suffix(1000))
+                        result = "\(head)\n…[truncated]\n\(tail)"
+                    }
+                } catch {
+                    state.errorTask(id: projectKey, message: error.localizedDescription)
+                    result = "Claude Code failed: \(error.localizedDescription)"
+                }
+            }
+
+        case "control_ui":
+            if let action = call.args["action"] {
+                switch action {
+                case "expand":
+                    if state.displayState == .open {
+                        result = "Already fully expanded."
+                    } else {
+                        NotificationCenter.default.post(name: .fridayExpand, object: nil)
+                        result = "Expanded."
+                    }
+                case "collapse":
+                    if state.displayState == .miniExpanded {
+                        result = "Already in compact view."
+                    } else {
+                        NotificationCenter.default.post(name: .fridayCollapse, object: nil)
+                        result = "Collapsed."
+                    }
+                case "switch_tab":
+                    let tab = call.args["tab"] ?? "home"
+                    switch tab {
+                    case "music":     state.update(\.activeTab, to: .music)
+                    case "calendar":  state.update(\.activeTab, to: .calendar)
+                    case "reminders": state.update(\.activeTab, to: .reminders)
+                    case "notes":     state.update(\.activeTab, to: .notes)
+                    default:          state.update(\.activeTab, to: .home)
+                    }
+                    if state.displayState != .open {
+                        NotificationCenter.default.post(name: .fridayExpand, object: nil)
+                    }
+                    result = "Switched to \(tab) tab."
+                case "dismiss_task":
+                    if let taskId = call.args["task_id"] {
+                        state.dismissTask(id: taskId)
+                        result = "Task '\(taskId)' dismissed."
+                    } else {
+                        state.dismissCompletedTasks()
+                        result = "Completed tasks cleared."
+                    }
+                default:
+                    result = "Unknown UI action: \(action)"
+                }
+            }
+
+        case "get_ui_state":
+            let panelDesc: String
+            switch state.displayState {
+            case .open:         panelDesc = "fully expanded"
+            case .miniExpanded: panelDesc = "compact (mini-expanded)"
+            case .mini:         panelDesc = "mini pill"
+            case .dismissed:    panelDesc = "dormant"
+            }
+            let taskDesc = state.activeTasks.isEmpty ? "none" :
+                state.activeTasks.map { "\($0.label) (\($0.status == .running ? "running" : $0.status == .done ? "done" : "error"))" }
+                    .joined(separator: ", ")
+            result = "Panel: \(panelDesc). Tab: \(state.activeTab.label). Tasks: \(taskDesc)."
+
+        case "refresh_session":
+            // Save notes, then reconnect cleanly — panel stays up, context resets
+            result = "Reconnecting now. I'll be right back."
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                await self?.refreshSession()
+            }
+
         case "disconnect_session":
             intentionalStop = true
             let dateStr: String = {
@@ -461,10 +599,85 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func wrapUpSession() async {
+        // Skip if session had no meaningful activity — avoids burning a turn on empty open/close cycles.
+        guard turnCount > 2 else { return }
         let msg = ClientContentMessage(clientContent: ClientContent(turns: [
-            ContentTurn(role: "user", parts: [TextPart(text: "System: User dismissed notch. Use manage_notes tool to summarize today s progress in the current project note.")])
+            ContentTurn(role: "user", parts: [TextPart(text: "System: User dismissed notch. Use manage_notes tool to summarize today's progress in the current project note.")])
         ], turnComplete: true))
         await sendEncoded(msg)
+    }
+
+    /// Fires after each turn to warn Papa if we're approaching Gemini's session limits.
+    /// Injects a system prompt — Friday handles the warning and can call refresh_session.
+    private func checkSessionHealth() {
+        guard !hasWarnedAboutContext, !intentionalStop else { return }
+        let elapsed = sessionStartTime.map { Date().timeIntervalSince($0) } ?? 0
+        guard elapsed >= sessionWarnMinutes || turnCount >= sessionWarnTurns else { return }
+        hasWarnedAboutContext = true
+
+        let mins = Int(elapsed / 60)
+        // Keep prompt minimal — avoid triggering a manage_notes tool chain here which burns 2 extra turns.
+        // Papa can explicitly say "save notes" or "reconnect" if he wants to act on the warning.
+        let prompt = "System: \(mins)min / \(turnCount) turns — approaching context limit. Tell Papa in one sentence that a fresh reconnect is available whenever he's ready."
+        Task { await sendSystemMessage(prompt) }
+    }
+
+    /// Injects a system-only message into the conversation without user attribution.
+    private func sendSystemMessage(_ text: String) async {
+        let msg = ClientContentMessage(clientContent: ClientContent(turns: [
+            ContentTurn(role: "user", parts: [TextPart(text: text)])
+        ], turnComplete: true))
+        await sendEncoded(msg)
+    }
+
+    /// Disconnects and immediately reconnects with a clean context.
+    /// Unlike stop()/intentionalStop, this does not dismiss the panel — Friday stays visible.
+    private func refreshSession() async {
+        print("Friday: refreshing session — clean reconnect")
+        playerNode.stop()
+
+        // Stamp new loop ID BEFORE cancelling — stale receiveLoop sees mismatch and won't reconnect.
+        // Also set intentionalStop so any still-running loop exits the reconnect guard cleanly.
+        receiveLoopId = UUID()
+        intentionalStop = true
+
+        let stale = urlSession
+        wsTask = nil
+        audioProcessor.wsTask = nil
+        urlSession = nil
+        stale?.invalidateAndCancel()
+        isConnecting = false
+        isReconnecting = false
+        reconnectAttempts = 0
+
+        // Reset session metrics so health check starts fresh
+        sessionStartTime = nil
+        turnCount = 0
+        hasWarnedAboutContext = false
+
+        // Drop all ClaudeProcess sessions — fresh Gemini context should pair with fresh Claude context.
+        // New instances are created on demand when the next execute_dev_task arrives.
+        claudeByProject.removeAll()
+
+        state.update(\.isConnected, to: false)
+        state.update(\.isSpeaking, to: false)
+        state.update(\.isThinking, to: false)
+
+        // Brief pause so the stale session's delegate callbacks fire before we open the new one.
+        // Without this, the delegate's didCompleteWithError can reset isConnecting on the new session.
+        try? await Task.sleep(nanoseconds: 300_000_000)
+
+        intentionalStop = false
+        await connect()
+    }
+
+    /// Returns the ClaudeProcess bound to a project key, creating one on first use.
+    /// Isolation: called on @MainActor — dictionary access is safe.
+    private func claudeForProject(_ key: String) -> ClaudeProcess {
+        if let existing = claudeByProject[key] { return existing }
+        let instance = ClaudeProcess()
+        claudeByProject[key] = instance
+        return instance
     }
 
     private func sendEncoded<T: Encodable>(_ value: T) async {
@@ -477,26 +690,25 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
     nonisolated func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
         Task { @MainActor in
+            // Ignore callbacks from stale sessions (e.g. after refreshSession tears down the old one)
+            guard session === self.urlSession else { return }
             FridayState.shared.update(\.isConnected, to: true)
             FridayState.shared.update(\.isError, to: false)
-            // Don't reset reconnectAttempts here — the socket can open and instantly drop.
-            // Reset only in handleServer when setupComplete confirms a stable session.
             self.connectionContinuation?.resume(returning: true)
             self.connectionContinuation = nil
         }
     }
 
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
-        // nil = clean close (server said goodbye, or stop() already tore us down) — not an error
         guard let error else { return }
-        // Ignore clean cancellations from stop() or invalidateAndCancel()
         if let err = error as NSError?,
            err.domain == NSURLErrorDomain && err.code == NSURLErrorCancelled { return }
 
-        print("Friday: session error — \(error)")
         Task { @MainActor in
+            // Ignore errors from stale sessions — they must not interfere with the new connection
+            guard session === self.urlSession else { return }
+            print("Friday: session error — \(error)")
             self.isConnecting = false
-            // Unblock connect() if it's waiting on the handshake
             if self.connectionContinuation != nil {
                 self.connectionContinuation?.resume(returning: false)
                 self.connectionContinuation = nil
@@ -655,9 +867,49 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         )
     )
 
+    private static let executeDevTaskTool = FunctionDecl(
+        name: "execute_dev_task",
+        description: "Execute a development task using Claude Code. Use for code analysis, making changes, debugging, or any task requiring understanding of a code project. Always pass project_path. Keep the task tightly scoped — one specific question or change, not 'look at everything'. Pass max_turns=5 for read-only questions, 15 for changes.",
+        parameters: FunctionParams(
+            type: "object",
+            properties: [
+                "task":         ParamProperty(type: "STRING", description: "The specific task or question for Claude Code. Be precise and scoped."),
+                "project_path": ParamProperty(type: "STRING", description: "Absolute path to the project (e.g. ~/projects/friday, ~/projects/oats). Required for code projects."),
+                "max_turns":    ParamProperty(type: "STRING", description: "Turn budget for Claude Code. Pass \"5\" for lookups/reads, \"15\" for edits. Default 15.")
+            ],
+            required: ["task"]
+        )
+    )
+
     private static let disconnectTool = FunctionDecl(
         name: "disconnect_session",
         description: "Immediately disconnect the live session and go to sleep. Use this when the user says goodbye or tells you to stop listening.",
         parameters: FunctionParams(type: "object", properties: [:], required: [])
+    )
+
+    private static let refreshSessionTool = FunctionDecl(
+        name: "refresh_session",
+        description: "Reconnect with a fresh context window. Call this when approaching session limits or when Papa asks to reconnect. Always save session notes with manage_notes BEFORE calling this.",
+        parameters: FunctionParams(type: "object", properties: [:], required: [])
+    )
+
+    private static let getUiStateTool = FunctionDecl(
+        name: "get_ui_state",
+        description: "Get the current state of the Friday UI — panel size, active tab, running tasks. Call this before taking UI actions so you know what's already showing.",
+        parameters: FunctionParams(type: "object", properties: [:], required: [])
+    )
+
+    private static let controlUiTool = FunctionDecl(
+        name: "control_ui",
+        description: "Control the Friday UI. Use get_ui_state first to know what's already showing before acting.",
+        parameters: FunctionParams(
+            type: "object",
+            properties: [
+                "action":  ParamProperty(type: "STRING", description: "expand, collapse, switch_tab, or dismiss_task"),
+                "tab":     ParamProperty(type: "STRING", description: "For switch_tab: home, music, calendar, reminders, notes"),
+                "task_id": ParamProperty(type: "STRING", description: "For dismiss_task: the project key (e.g. 'friday', 'oats'). Omit to dismiss all completed tasks.")
+            ],
+            required: ["action"]
+        )
     )
 }

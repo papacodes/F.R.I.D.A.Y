@@ -62,9 +62,11 @@ class BatteryManager: ObservableObject {
         }
         
         // Charging — alert on change
+        var chargingAlertFired = false
         if let isCharging = description["Is Charging"] as? Bool {
             if let prev = prevIsCharging, prev != isCharging {
-                state.postAlert(.battery(Int(state.batteryLevel), charging: isCharging))
+                NotchAlertEngine.shared.postAlert(.battery(Int(state.batteryLevel), charging: isCharging))
+                chargingAlertFired = true
             }
             prevIsCharging = isCharging
             state.isCharging = isCharging
@@ -73,8 +75,8 @@ class BatteryManager: ObservableObject {
         // Plugged In — alert on change (only if charging state didn't already fire)
         if let powerSourceState = description[kIOPSPowerSourceStateKey] as? String {
             let isPluggedIn = (powerSourceState == kIOPSACPowerValue)
-            if let prev = prevIsPluggedIn, prev != isPluggedIn, prevIsCharging == state.isCharging {
-                state.postAlert(.battery(Int(state.batteryLevel), charging: state.isCharging))
+            if let prev = prevIsPluggedIn, prev != isPluggedIn, !chargingAlertFired {
+                NotchAlertEngine.shared.postAlert(.battery(Int(state.batteryLevel), charging: state.isCharging))
             }
             prevIsPluggedIn = isPluggedIn
             state.isPluggedIn = isPluggedIn
@@ -84,7 +86,7 @@ class BatteryManager: ObservableObject {
         let lpm = ProcessInfo.processInfo.isLowPowerModeEnabled
         if state.isInLowPowerMode != lpm {
             state.isInLowPowerMode = lpm
-            if lpm { state.postAlert(.battery(Int(state.batteryLevel), charging: state.isCharging)) }
+            if lpm { NotchAlertEngine.shared.postAlert(.battery(Int(state.batteryLevel), charging: state.isCharging)) }
         }
     }
     

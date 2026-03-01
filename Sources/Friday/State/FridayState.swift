@@ -52,6 +52,26 @@ enum NotchDisplayState: Equatable {
     case dismissed, mini, miniExpanded, open
 }
 
+// MARK: - Active Task (per execute_dev_task invocation)
+
+struct ActiveTask: Identifiable, Equatable {
+    let id: String          // project key — e.g. "friday", "oats", "default"
+    var label: String       // short display name derived from path
+    var status: Status
+    var currentStep: String
+    var log: [LogEntry]
+
+    enum Status: Equatable {
+        case running, done, error
+    }
+
+    struct LogEntry: Identifiable, Equatable {
+        let id = UUID()
+        let text: String
+        let isError: Bool
+    }
+}
+
 struct ActivityItem: Identifiable, Equatable {
     let id = UUID()
     let type: ActivityType
@@ -109,8 +129,11 @@ enum NotchTab: CaseIterable, Identifiable {
 final class FridayState: ObservableObject {
     static let shared = FridayState()
     private init() {
-        $isListening.combineLatest($isThinking, $isSpeaking, $isDevTaskRunning)
-            .map { $0 || $1 || $2 || $3 }
+        // Panel visibility is driven by session state and dev tasks — not per-turn flags.
+        // Per-turn flags (isListening, isThinking, isSpeaking) only drive UI content within the session.
+        $isFridaySessionActive
+            .combineLatest($isDevTaskRunning)
+            .map { $0 || $1 }
             .combineLatest($isPlayingMusic)
             .sink { [weak self] (isActive, isPlayingMusic) in
                 self?.handleActivityChange(isActive: isActive, isPlayingMusic: isPlayingMusic)
@@ -121,8 +144,8 @@ final class FridayState: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
     private var dismissTimer: Timer?
-    private var alertTimer: Timer?
-    private var alertQueue: [SystemAlert] = []
+
+    // MARK: - Friday session state (per-turn)
 
     @Published var isListening = false { didSet { recordActivity() } }
     @Published var isThinking = false { didSet { recordActivity() } }
@@ -130,23 +153,42 @@ final class FridayState: ObservableObject {
     @Published var isError = false
     @Published var isConnected = false
     @Published var isDevTaskRunning = false { didSet { recordActivity() } }
+    private var devTaskCount = 0
     @Published var transcript = ""
     @Published var volume: Float = 0.0
     @Published var modelName = "Gemini 2.5 Flash"
     @Published var hasGreetedThisSession = false
     @Published var lastActivityTime = Date()
     @Published var activityFeed: [ActivityItem] = []
+    @Published var activeTasks: [ActiveTask] = []
     @Published var longTermMemoryContext: String = ""
+
+    // MARK: - Friday session lifecycle
+
+    /// True from the moment Friday wakes until she is explicitly dismissed.
+    /// This is the authoritative flag for panel persistence — completely independent
+    /// of per-turn processing state. The panel stays up as long as this is true.
+    @Published var isFridaySessionActive = false
+
+    // MARK: - Display state
 
     @Published var displayState: NotchDisplayState = .dismissed {
         didSet {
             guard displayState != oldValue else { return }
-            print("[State] displayState: \(oldValue) -> \(displayState)") 
-            
-            if (displayState == .mini || displayState == .miniExpanded) && !isUserInitiatedExpansion {
-                let hasReason = activeAlert != nil || isHovering || isPlayingMusic || isActive
+            print("[State] displayState: \(oldValue) -> \(displayState)")
+
+            // isActive is the absolute override — no timer or guard may dismiss while active
+            if isActive && (displayState == .mini || displayState == .dismissed) {
+                print("[State] Active — blocked \(displayState). Holding at .miniExpanded.")
+                displayState = .miniExpanded
+                return
+            }
+
+            // Notification guard — block empty transitions when not active
+            if (displayState == .mini || displayState == .miniExpanded) && !isUserInitiatedExpansion && !isActive {
+                let hasReason = activeAlert != nil || isHovering || isPlayingMusic
                 if !hasReason {
-                    print("[State] Blocked empty transition. Reverting to dismissed.")
+                    print("[State] Blocked empty transition to \(displayState). Reverting to dismissed.")
                     displayState = .dismissed
                     return
                 }
@@ -156,20 +198,26 @@ final class FridayState: ObservableObject {
             if displayState == .dismissed { dismissTimer?.invalidate() }
         }
     }
+
     @Published var closedNotchSize: CGSize = CGSize(width: 200, height: 32)
     @Published var standardWidth: CGFloat = 440
     @Published var isUserInitiatedExpansion = false
-    
+
     @Published var isHovering = false {
         didSet {
+            // Hover exit — let the alert engine decide what to do next
             if !isHovering && oldValue {
-                showNextAlert() 
+                NotchAlertEngine.shared.showNextAlert()
             }
         }
     }
 
+    // Owned by FridayState as a published property so views can observe it.
+    // Written by NotchAlertEngine, never by Friday's session logic.
     @Published var activeAlert: SystemAlert? = nil
     @Published var activeTab: NotchTab = .home
+
+    // MARK: - Music state
 
     @Published var isPlayingMusic = false { didSet { recordActivity() } }
     @Published var isMusicPaused = false { didSet { recordActivity() } }
@@ -180,15 +228,26 @@ final class FridayState: ObservableObject {
     @Published var playbackPosition: TimeInterval = 0
     @Published var playbackDuration: TimeInterval = 0
 
+    // MARK: - System state
+
     @Published var batteryLevel: Float = 0.0
     @Published var isCharging: Bool = false
     @Published var isPluggedIn: Bool = false
     @Published var isInLowPowerMode: Bool = false
     @Published var lastMusicActivity: Date = Date()
 
+    // MARK: - Computed
+
     var hasMusicTrack: Bool { isPlayingMusic || isMusicPaused }
-    var isActive: Bool { isListening || isThinking || isSpeaking || isDevTaskRunning }
+
+    /// True when a Friday session is live or a dev task is running.
+    /// Per-turn flags (isListening, isThinking, isSpeaking) do NOT contribute here —
+    /// they drive UI content only. Panel persistence is governed by isFridaySessionActive.
+    var isActive: Bool { isFridaySessionActive || isDevTaskRunning }
+
     var isExpanded: Bool { displayState == .open }
+
+    // MARK: - Activity
 
     private var lastIsActive = false
     private var lastIsPlayingMusic = false
@@ -200,16 +259,20 @@ final class FridayState: ObservableObject {
 
         withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
             if isActive {
-                if displayState == .dismissed || displayState == .mini {
-                    displayState = .miniExpanded
+                // Session started — hold in assistant view but never close the open panel
+                if self.displayState != .open {
+                    self.displayState = .miniExpanded
                 }
-            } else if isPlayingMusic {
-                if displayState == .dismissed {
-                    displayState = .mini
-                }
+                self.dismissTimer?.invalidate()
+                self.dismissTimer = nil
             } else {
-                if displayState != .dismissed && activeAlert == nil && !isHovering {
-                    startDismissTimer()
+                // Session ended
+                if isPlayingMusic {
+                    if displayState == .dismissed { self.displayState = .mini }
+                } else {
+                    if displayState != .dismissed && activeAlert == nil && !isHovering {
+                        startDismissTimer()
+                    }
                 }
             }
         }
@@ -229,64 +292,75 @@ final class FridayState: ObservableObject {
         }
     }
 
-    private func showNextAlert() {
-        guard !alertQueue.isEmpty else {
-            if !self.isPlayingMusic && !self.isActive && (self.displayState == .mini || self.displayState == .miniExpanded) {
-                if self.isHovering { return }
-                withAnimation(.interactiveSpring(response: 0.8, dampingFraction: 0.9)) {
-                    self.displayState = .dismissed
-                }
-                Task {
-                    try? await Task.sleep(nanoseconds: 1_200_000_000)
-                    if self.alertQueue.isEmpty && !self.isHovering { self.activeAlert = nil }
-                }
-            } else if !self.isPlayingMusic && !self.isActive && !self.isHovering {
-                self.activeAlert = nil
-            }
-            return
-        }
-
-        let alert = alertQueue.removeFirst()
-        alertTimer?.invalidate()
-
-        withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
-            self.activeAlert = alert
-            if displayState == .dismissed { displayState = .mini }
-        }
-
-        alertTimer = Timer.scheduledTimer(withTimeInterval: alert.duration, repeats: false) { [weak self] _ in
-            Task { @MainActor in 
-                guard let self = self else { return }
-                if self.isHovering { return }
-                self.showNextAlert() 
-            }
-        }
-    }
-
-    func postAlert(_ alert: SystemAlert) {
-        Task { @MainActor in
-            if activeAlert?.id == alert.id {
-                activeAlert = alert
-                alertTimer?.invalidate()
-                alertTimer = Timer.scheduledTimer(withTimeInterval: alert.duration, repeats: false) { [weak self] _ in
-                    Task { @MainActor in 
-                        guard let self = self else { return }
-                        if self.isHovering { return }
-                        self.showNextAlert() 
-                    }
-                }
-                return
-            }
-            alertQueue.append(alert)
-            if activeAlert == nil { showNextAlert() }
-        }
-    }
+    // MARK: - Helpers
 
     func update<T: Equatable>(_ keyPath: ReferenceWritableKeyPath<FridayState, T>, to value: T) {
         if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
     }
 
     func recordActivity() { lastActivityTime = Date(); lastMusicActivity = Date() }
+
+    /// Increment the running task counter. Sets isDevTaskRunning when the first task starts.
+    func beginDevTask() {
+        devTaskCount += 1
+        isDevTaskRunning = true
+    }
+
+    /// Decrement the running task counter. Clears isDevTaskRunning only when the last task finishes.
+    func endDevTask() {
+        devTaskCount = max(0, devTaskCount - 1)
+        isDevTaskRunning = devTaskCount > 0
+    }
+
+    // MARK: - Active task management
+
+    func startTask(id: String, label: String) {
+        let task = ActiveTask(id: id, label: label, status: .running, currentStep: "Starting...", log: [])
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+            activeTasks.removeAll { $0.id == id }
+            activeTasks.append(task)
+        }
+        beginDevTask()
+    }
+
+    func updateTask(id: String, step: String, isError: Bool = false) {
+        guard let idx = activeTasks.firstIndex(where: { $0.id == id }) else { return }
+        let entry = ActiveTask.LogEntry(text: step, isError: isError)
+        activeTasks[idx].currentStep = step
+        activeTasks[idx].log.append(entry)
+        if activeTasks[idx].log.count > 60 { activeTasks[idx].log.removeFirst() }
+    }
+
+    func completeTask(id: String) {
+        guard let idx = activeTasks.firstIndex(where: { $0.id == id }) else { return }
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+            activeTasks[idx].status = .done
+            activeTasks[idx].currentStep = "Done"
+        }
+        endDevTask()
+    }
+
+    func errorTask(id: String, message: String) {
+        guard let idx = activeTasks.firstIndex(where: { $0.id == id }) else { return }
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+            activeTasks[idx].status = .error
+            activeTasks[idx].currentStep = message
+            activeTasks[idx].log.append(.init(text: message, isError: true))
+        }
+        endDevTask()
+    }
+
+    func dismissTask(id: String) {
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+            activeTasks.removeAll { $0.id == id }
+        }
+    }
+
+    func dismissCompletedTasks() {
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+            activeTasks.removeAll { $0.status == .done || $0.status == .error }
+        }
+    }
 
     func addActivity(type: ActivityItem.ActivityType, title: String, subtitle: String? = nil) {
         let item = ActivityItem(type: type, title: title, subtitle: subtitle)
@@ -295,6 +369,8 @@ final class FridayState: ObservableObject {
             if activityFeed.count > 10 { activityFeed.removeLast() }
         }
     }
+
+    // MARK: - Peripherals
 
     @Published var peripheralManager = PeripheralManager()
     @Published var airPodsConnectionState: AirPodsConnectionState = .disconnected
@@ -306,7 +382,7 @@ final class FridayState: ObservableObject {
                 self?.airPodsConnectionState = state
                 if case .connected(let name, let status) = state {
                     let avgBattery = ((status.left ?? 0) + (status.right ?? 0)) / 2
-                    self?.postAlert(SystemAlert.airpods(name: name, level: avgBattery))
+                    NotchAlertEngine.shared.postAlert(SystemAlert.airpods(name: name, level: avgBattery))
                 }
             }
             .store(in: &cancellables)

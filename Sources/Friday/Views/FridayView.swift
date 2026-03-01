@@ -49,7 +49,7 @@ struct FridayView: View {
             // Main Notch Container
             ZStack(alignment: .top) {
                 Color.black
-                
+
                 notchContent
                     .animation(spring, value: state.displayState)
                     .animation(spring, value: state.isActive)
@@ -72,67 +72,69 @@ struct FridayView: View {
             .onTapGesture {
                 NotificationCenter.default.post(name: .fridayToggle, object: nil)
             }
-            .shadow(color: .black.opacity(state.displayState == .dismissed ? 0 : (state.displayState == .mini ? 0.3 : 0.6)), radius: 40, x: 0, y: 20)
+            .shadow(color: .black.opacity(state.displayState == .dismissed ? 0 : (state.displayState == .mini ? 0.3 : 0.5)), radius: 28, x: 0, y: 10)
+
+            // Task Manager Pill — floats below the expanded notch when tasks are active
+            if state.displayState == .open && !state.activeTasks.isEmpty {
+                VStack(spacing: 0) {
+                    // Transparent spacer matching the notch height + gap
+                    Color.clear
+                        .frame(height: NotchSizes.openHeight + 12)
+                        .allowsHitTesting(false)
+
+                    TaskManagerPillView()
+                        .frame(width: NotchSizes.openWidth)
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .offset(y: -8)),
+                            removal: .opacity.combined(with: .offset(y: -4))
+                        ))
+                }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Color.clear)
         .ignoresSafeArea()
         .animation(spring, value: state.displayState)
         .animation(spring, value: state.isActive)
         .animation(spring, value: state.hasMusicTrack)
         .animation(spring, value: state.standardWidth)
+        .animation(spring, value: state.activeTasks.isEmpty)
         .preferredColorScheme(.dark)
     }
 
     // MARK: - Content per state
 
-    @ViewBuilder
+        @ViewBuilder
     private var notchContent: some View {
         let notchH = state.closedNotchSize.height
 
-        // Always show the expanded content if an alert is active (even during contraction to dismissed)
-        if state.activeAlert != nil && state.displayState != .open {
+        if state.displayState == .open {
+            // Full expanded view — always takes priority in open state, session or not
+            NotchExpandedView()
+                .frame(width: NotchSizes.openWidth, height: NotchSizes.openHeight)
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .scale(scale: 0.97, anchor: .top)),
+                    removal: .opacity
+                ))
+
+        } else if (state.isFridaySessionActive || state.isDevTaskRunning) && state.activeAlert == nil {
+            // Friday's session view — shown when in session and no notification is active
+            NotchAssistantMiniView()
+                .frame(width: notchSize.width, height: notchSize.height)
+                .transition(.opacity)
+
+        } else if state.activeAlert != nil || state.displayState == .mini || state.displayState == .miniExpanded {
+            // Notifications, alerts, or music — displayed as intended, even during a session.
+            // When the alert clears, content switches back to NotchAssistantMiniView automatically.
             HorizontalNotchView()
                 .frame(width: notchSize.width, height: notchSize.height)
+                .transition(.opacity)
+
         } else {
-            switch state.displayState {
-            case .dismissed:
-                NotchIdleIndicator()
-                    .frame(width: state.closedNotchSize.width, height: notchH)
-                    .transition(.opacity)
-
-            case .mini:
-                HorizontalNotchView()
-                    .frame(width: 440, height: notchH)
-                    .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .top)))
-
-            case .miniExpanded:
-                if state.activeAlert != nil {
-                    AlertNotchView()
-                        .frame(width: 440, height: notchH)
-                        .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .top)))
-                } else {
-                    HorizontalNotchView()
-                        
-                        .frame(
-                            width:  state.standardWidth,
-                            height: state.isActive || state.hasMusicTrack ? notchH * 2.2 : notchH
-                        )
-                        .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
-                }
-
-            case .open:
-                NotchExpandedView()
-                    .frame(
-                        width:  NotchSizes.openWidth,
-                        height: NotchSizes.openHeight
-                    )
-                    .transition(
-                        .asymmetric(
-                            insertion: .opacity.combined(with: .scale(scale: 0.97, anchor: .top)),
-                            removal:   .opacity
-                        )
-                    )
-            }
+            // Dormant physical notch
+            NotchIdleIndicator()
+                .frame(width: state.closedNotchSize.width, height: notchH)
+                .transition(.opacity)
         }
     }
 }

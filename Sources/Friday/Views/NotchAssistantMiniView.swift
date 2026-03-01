@@ -1,0 +1,104 @@
+import SwiftUI
+
+/// Core Component: The persistent "Assistant" presence.
+/// This view is specific to Friday and shows her internal state (mic, status, thinking).
+struct NotchAssistantMiniView: View {
+    @ObservedObject private var state = FridayState.shared
+    
+    var body: some View {
+        let notchH = state.closedNotchSize.height
+        
+        VStack(spacing: 0) {
+            // ROW 1: System Icons (Utility Row)
+            NotchMiniView(
+                left: fridayTopLeftWidget,
+                right: fridayTopRightWidget
+            )
+            
+            // ROW 2: The Assistant Layer (Centered Architecture)
+            ZStack {
+                // LEFT GROUP: Orb + Mini Waveform
+                HStack(spacing: 8) {
+                    MiniOrbView(
+                        isActive: state.isActive,
+                        isError: state.isError,
+                        isDevTask: state.isDevTaskRunning,
+                        isConnected: state.isConnected
+                    )
+                    .scaleEffect(1.1)
+                    
+                    if (state.isListening || state.isSpeaking) && !state.isThinking {
+                        MiniWaveform(isActive: true, color: .cyan)
+                            .frame(width: 32, height: 14)
+                    }
+                    
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                
+                // CENTER: Status Text (Locked to exact middle)
+                HStack {
+                    Text(statusLabel.uppercased())
+                        .font(.system(size: 10, weight: .black, design: .rounded))
+                        .foregroundColor(state.isError ? .red : .white)
+                        .tracking(1.0)
+                }
+                
+                // RIGHT: Mic Indicator
+                HStack {
+                    Spacer()
+                    micIndicator
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            .padding(.horizontal, 24)
+            .frame(height: notchH)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+    
+    @ViewBuilder
+    private var micIndicator: some View {
+        // Mic is on for the duration of the session. isListening (VAD) shows activity level.
+        let micOn = state.isFridaySessionActive
+        ZStack {
+            Circle()
+                .fill(state.isListening ? Color.yellow.opacity(0.15) : Color.white.opacity(0.06))
+                .frame(width: 24, height: 24)
+
+            Image(systemName: micOn ? "mic.fill" : "mic.slash.fill")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(state.isListening ? .yellow : (micOn ? .white.opacity(0.5) : .red))
+        }
+    }
+    
+    @ViewBuilder
+    private var fridayTopLeftWidget: some View {
+        if let alert = state.activeAlert {
+            Image(systemName: alert.icon).font(.system(size: 13, weight: .bold)).foregroundColor(alert.color)
+        } else if state.isPlayingMusic && !state.isActive {
+            MiniWaveform(isActive: true, color: .white.opacity(0.6)).frame(width: 32, height: 14)
+        } else {
+            Spacer().frame(width: 1)
+        }
+    }
+    
+    @ViewBuilder
+    private var fridayTopRightWidget: some View {
+        if let alert = state.activeAlert {
+            CompactBatteryRing(value: alert.value, color: alert.color, isCharging: alert.isCharging)
+        } else {
+            BatteryIndicator().opacity(0.6)
+        }
+    }
+    
+    private var statusLabel: String {
+        if state.isError    { return "Error" }
+        if state.isThinking { return "Thinking" }
+        if state.isSpeaking { return "Speaking" }
+        if state.isDevTaskRunning { return "Coding" }
+        if state.isListening { return "Listening" }
+        // In session but VAD is idle — pipeline is live, waiting for input
+        return "Waiting"
+    }
+}

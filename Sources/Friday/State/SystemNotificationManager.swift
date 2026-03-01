@@ -42,7 +42,7 @@ class SystemNotificationManager: ObservableObject {
         let current = Self.readVolume()
         let target = max(0, min(1, current + (up ? step : -step)))
         Self.setVolume(target)
-        FridayState.shared.postAlert(.volume(target))
+        NotchAlertEngine.shared.postAlert(.volume(target))
     }
 
     func toggleMute() {
@@ -60,17 +60,17 @@ class SystemNotificationManager: ObservableObject {
             AudioObjectGetPropertyData(deviceID, &muteAddr, 0, nil, &size, &muted)
             var newVal: UInt32 = muted == 0 ? 1 : 0
             AudioObjectSetPropertyData(deviceID, &muteAddr, 0, nil, size, &newVal)
-            FridayState.shared.postAlert(.volume(newVal == 1 ? 0 : Self.readVolume()))
+            NotchAlertEngine.shared.postAlert(.volume(newVal == 1 ? 0 : Self.readVolume()))
         } else {
             // Software mute: save/restore volume
             let current = Self.readVolume()
             if current > 0.001 {
                 preMuteVolume = current
                 Self.setVolume(0)
-                FridayState.shared.postAlert(.volume(0))
+                NotchAlertEngine.shared.postAlert(.volume(0))
             } else if let pre = preMuteVolume {
                 Self.setVolume(pre)
-                FridayState.shared.postAlert(.volume(pre))
+                NotchAlertEngine.shared.postAlert(.volume(pre))
                 preMuteVolume = nil
             }
         }
@@ -83,7 +83,7 @@ class SystemNotificationManager: ObservableObject {
         let current = Self.readBrightness()
         let target = max(0, min(1, current + (up ? step : -step)))
         Self.setBrightness(target)
-        FridayState.shared.postAlert(.brightness(target))
+        NotchAlertEngine.shared.postAlert(.brightness(target))
     }
 
     // MARK: - CoreAudio helpers (always use fresh device ID)
@@ -314,7 +314,7 @@ class SystemNotificationManager: ObservableObject {
         if out.contains("Connected: Yes") && out.contains("Battery Level:") && out.contains("AirPods") {
             if !knownDevices.contains("AirPods") {
                 knownDevices.insert("AirPods")
-                FridayState.shared.postAlert(.airpods(name: "AirPods", level: 100))
+                NotchAlertEngine.shared.postAlert(.airpods(name: "AirPods", level: 100))
             }
         } else {
             knownDevices.remove("AirPods")
@@ -328,7 +328,7 @@ class SystemNotificationManager: ObservableObject {
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { _ in
             Task { @MainActor in
-                FridayState.shared.postAlert(SystemAlert(
+                NotchAlertEngine.shared.postAlert(SystemAlert(
                     id: "wake", icon: "sun.max.fill", value: 1.0, color: Color.cyan,
                     duration: 2.0, style: SystemAlert.RightStyle.bar, isCharging: false, isInteractive: true
                 ))

@@ -11,6 +11,16 @@ struct DateHelper {
 
     /// Parses various formats from Gemini and returns an AppleScript-friendly string
     static func parseAndFormat(_ input: String) -> String {
+        // NSDataDetector first — correctly handles "today at 3pm", "tomorrow at 9am", etc.
+        // The bare-keyword checks below would discard the time component.
+        let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue)
+        let matches = detector?.matches(in: input, options: [], range: NSRange(location: 0, length: input.utf16.count))
+
+        if let date = matches?.first?.date {
+            return formatForAppleScript(date)
+        }
+
+        // Fallback for bare "today" / "tomorrow" when no time is specified
         let clean = input.lowercased()
         let now = Date()
         let calendar = Calendar.current
@@ -21,14 +31,6 @@ struct DateHelper {
         }
         if clean.contains("today") {
             return formatForAppleScript(now)
-        }
-
-        // Fallback to data detector for natural language parsing
-        let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue)
-        let matches = detector?.matches(in: input, options: [], range: NSRange(location: 0, length: input.utf16.count))
-        
-        if let date = matches?.first?.date {
-            return formatForAppleScript(date)
         }
 
         return input // Return original if all else fails

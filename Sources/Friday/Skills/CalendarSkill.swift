@@ -5,7 +5,23 @@ struct CalendarSkill {
         let endPart = endTime != nil ? ", end date:date \"\(endTime!)\"" : ""
         let script = "tell application \"Calendar\"\n" +
                      "try\n" +
-                     "  set targetCal to first calendar whose name is \"Calendar\" or name is \"Work\"\n" +
+                     "  -- Try named calendars first; fall back to first writable calendar\n" +
+                     "  set targetCal to missing value\n" +
+                     "  repeat with c in calendars\n" +
+                     "    if (name of c is \"Calendar\" or name of c is \"Work\") then\n" +
+                     "      set targetCal to c\n" +
+                     "      exit repeat\n" +
+                     "    end if\n" +
+                     "  end repeat\n" +
+                     "  if targetCal is missing value then\n" +
+                     "    repeat with c in calendars\n" +
+                     "      if writable of c is true then\n" +
+                     "        set targetCal to c\n" +
+                     "        exit repeat\n" +
+                     "      end if\n" +
+                     "    end repeat\n" +
+                     "  end if\n" +
+                     "  if targetCal is missing value then return \"Error: no writable calendar found.\"\n" +
                      "  tell targetCal\n" +
                      "    make new event with properties {summary:\"\(title)\", start date:date \"\(startTime)\"\(endPart)}\n" +
                      "  end tell\n" +
@@ -34,7 +50,7 @@ struct CalendarSkill {
                      "  set calName to name of aCal\n" +
                      "  if calName is not \"Birthdays\" and calName is not \"Siri Suggestions\" then\n" +
                      "    try\n" +
-                     "      set dailyEvents to (every event of aCal whose (start date is greater than or equal to targetDate and start date is less than endOfPeriod) or (start date is less than targetDate and end date is greater than targetDate))\n" +
+                     "      set dailyEvents to (every event of aCal whose ((start date is greater than or equal to targetDate and start date is less than endOfPeriod) or (start date is less than targetDate and end date is greater than targetDate)))\n" +
                      "      repeat with anEvent in dailyEvents\n" +
                      "        set output to output & \"(\" & calName & \") \" & summary of anEvent & \" at \" & (time string of (get start date of anEvent)) & \"\\n\"\n" +
                      "      end repeat\n" +

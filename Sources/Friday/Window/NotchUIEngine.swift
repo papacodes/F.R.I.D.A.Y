@@ -7,8 +7,8 @@ final class NotchUIEngine: NSObject, NSWindowDelegate {
     private let panel: NotchWindow
     private let notchSpace = CGSSpace(level: 2147483647)
 
-    private let windowWidth:  CGFloat = 640
-    private let windowHeight: CGFloat = 320
+    private let windowWidth:  CGFloat = 660  // matches NotchSizes.openWidth exactly
+    private let windowHeight: CGFloat = 540  // extra room for task manager pill below expanded notch
     
     private var dismissalTimer: Timer?
     private var intentionalHoverTimer: Timer?
@@ -21,7 +21,11 @@ final class NotchUIEngine: NSObject, NSWindowDelegate {
         panel.delegate = self
         
         let hostingView = NSHostingView(rootView: FridayView())
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = .clear
         if let cv = panel.contentView {
+            cv.wantsLayer = true
+            cv.layer?.backgroundColor = .clear
             hostingView.frame = cv.bounds
             hostingView.autoresizingMask = [.width, .height]
             cv.addSubview(hostingView)
@@ -46,7 +50,7 @@ final class NotchUIEngine: NSObject, NSWindowDelegate {
         // Initial "Ready" sequence
         Task {
             try? await Task.sleep(nanoseconds: 800_000_000)
-            FridayState.shared.postAlert(SystemAlert.friday(duration: 3.5))
+            NotchAlertEngine.shared.postAlert(SystemAlert.friday(duration: 3.5))
         }
     }
     
@@ -88,12 +92,15 @@ final class NotchUIEngine: NSObject, NSWindowDelegate {
                 let state = FridayState.shared
                 state.isHovering = true
                 
-                // Wake Engine starts ONLY when hovering over the idle notch
-                if state.displayState == .dismissed || state.displayState == .mini {
+                // Wake Engine starts ONLY when hovering over the truly idle notch (no notification showing).
+                if state.displayState == .dismissed {
                     WakeWordEngine.shared.start()
-                    // If an alert is active, expand to show details (name, value, etc)
+                }
+
+                // Expand notification mini pill to miniExpanded on hover so the user can read it.
+                if state.displayState == .mini && state.activeAlert != nil {
                     withAnimation(.interactiveSpring(response: 0.4, dampingFraction: 0.8)) {
-                        state.displayState = state.activeAlert != nil ? .miniExpanded : .mini
+                        state.displayState = .miniExpanded
                     }
                 }
 
@@ -153,20 +160,18 @@ final class NotchUIEngine: NSObject, NSWindowDelegate {
     
     private func checkAndDismiss() {
         let state = FridayState.shared
-        // If we are currently hovering, dont dismiss yet.
-        if isMouseInside { return }
+        // 1. Never dismiss while Friday is active (Mic is ON)
+        if state.isActive || isMouseInside { return }
         
         withAnimation(.interactiveSpring(response: 0.8, dampingFraction: 0.9)) {
             if state.isUserInitiatedExpansion {
                 // Do nothing — wait for explicit user action
-            } else if state.isActive || state.isDevTaskRunning {
-                state.displayState = .miniExpanded
             } else if state.hasMusicTrack {
                 state.displayState = .mini
             } else if state.activeAlert != nil {
-                // Alert is visible - wait for its own timer to handle it
+                // Alert is visible - wait for its own timer
             } else {
-                // Back to physical notch
+                // Return to dormant
                 state.displayState = .dismissed
             }
         }
@@ -183,18 +188,18 @@ final class NotchUIEngine: NSObject, NSWindowDelegate {
     }
 
     /// Smart collapse — called when the user taps to dismiss the open panel.
-    /// Collapses to mini if Friday is active (keeps pipeline running);
-    /// fully dismisses and stops the pipeline if she's idle.
+    /// Collapses to miniExpanded if a Friday session is active (keeps pipeline running);
+    /// initiates graceful shutdown if she's idle.
     func collapseOrDismiss() {
         let state = FridayState.shared
         FridayState.shared.isUserInitiatedExpansion = false
         triggerHaptic()
 
-        if state.isActive || state.isDevTaskRunning {
+        if state.isFridaySessionActive || state.isDevTaskRunning {
             withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.9)) {
                 FridayState.shared.displayState = .miniExpanded
             }
-            // Pipeline keeps running — Friday is still working
+            // Pipeline keeps running — Friday is still in session
         } else {
             WakeWordEngine.shared.stop()
             withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.9)) {
@@ -207,6 +212,8 @@ final class NotchUIEngine: NSObject, NSWindowDelegate {
     }
 
     func goMini() {
+        // Never enter mini state while Friday is active — she owns miniExpanded
+        guard !FridayState.shared.isActive else { return }
         FridayState.shared.recordActivity()
         withAnimation(.interactiveSpring(response: 0.38, dampingFraction: 0.8)) {
             FridayState.shared.displayState = .mini
@@ -219,6 +226,9 @@ final class NotchUIEngine: NSObject, NSWindowDelegate {
         WakeWordEngine.shared.stop()
         FridayState.shared.recordActivity()
         FridayState.shared.isUserInitiatedExpansion = userInitiated
+        if wake {
+            FridayState.shared.isFridaySessionActive = true
+        }
         withAnimation(.interactiveSpring(response: 0.38, dampingFraction: 0.8)) {
             FridayState.shared.displayState = .miniExpanded
         }
@@ -242,11 +252,12 @@ final class NotchUIEngine: NSObject, NSWindowDelegate {
     func dismiss() {
         FridayState.shared.recordActivity()
         FridayState.shared.isUserInitiatedExpansion = false
-        
+        FridayState.shared.isFridaySessionActive = false
+
         // Stop everything immediately
         AppDelegate.pipeline.stop()
         WakeWordEngine.shared.stop()
-        
+
         withAnimation(.interactiveSpring(response: 0.3, dampingFraction: 0.9)) {
             FridayState.shared.displayState = .dismissed
             triggerHaptic()

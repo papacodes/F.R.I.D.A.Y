@@ -6,14 +6,17 @@ struct NotchExpandedView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            // Layer 0: Background Glow (Home only)
+            // Layer 0: Background Glow (Home only) — colour tracks state
             if state.activeTab == .home {
+                let glowColor: Color = state.isError ? .red : (state.isThinking ? .purple : .cyan)
                 Circle()
-                    .fill(Color.cyan.opacity(0.12))
+                    .fill(glowColor.opacity(0.12))
                     .frame(width: 300, height: 300)
                     .blur(radius: 60)
                     .offset(y: 40)
                     .transition(.opacity)
+                    .animation(.spring(response: 0.5, dampingFraction: 0.8), value: state.isError)
+                    .animation(.spring(response: 0.5, dampingFraction: 0.8), value: state.isThinking)
             }
 
             // Layer 1: Layout Skeleton (Header and Bottom Pills)

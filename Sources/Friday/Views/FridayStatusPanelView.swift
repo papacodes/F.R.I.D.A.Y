@@ -25,7 +25,7 @@ struct FridayStatusPanelView: View {
             // Status label
             Text(statusText.uppercased())
                 .font(.system(size: 11, weight: .black, design: .rounded))
-                .foregroundColor(.white)
+                .foregroundColor(statusColor)
                 .tracking(1.5)
                 .matchedGeometryEffect(id: "orb_text", in: namespace)
                 .shadow(color: .black.opacity(0.5), radius: 2)

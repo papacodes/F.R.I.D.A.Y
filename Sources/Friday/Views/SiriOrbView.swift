@@ -55,6 +55,8 @@ struct SiriOrbView: View {
         .frame(width: 100, height: 100)
         .saturation(isConnected ? 1.0 : 0.0)
         .opacity(isConnected ? 1.0 : 0.5)
+        // Smoothly animate orb contraction when volume snaps to 0 (e.g. on turnComplete)
+        .animation(.easeOut(duration: 0.35), value: volume)
         .onAppear {
             withAnimation(.linear(duration: 5).repeatForever(autoreverses: false)) {
                 rotation = 360
