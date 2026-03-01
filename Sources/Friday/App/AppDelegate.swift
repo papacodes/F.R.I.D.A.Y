@@ -22,6 +22,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func launch() {
         loadMemory() // Load long-term memory context on launch
+        RAGSkill.startIndexing() // Kick off background notes indexing
 
         windowController = NotchUIEngine()
 

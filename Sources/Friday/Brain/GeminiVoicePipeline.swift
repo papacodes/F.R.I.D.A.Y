@@ -175,7 +175,19 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         defer { isReconnecting = false }
 
         reconnectAttempts += 1
-        let delay = min(pow(2.0, Double(reconnectAttempts - 1)), 30.0) // 1, 2, 4, 8, 16, 30…
+
+        // Hard cap — after 5 failed attempts give up rather than hammering the API.
+        // Rapid reconnect storms can trigger Google rate limits that block subsequent sessions.
+        guard reconnectAttempts <= 5 else {
+            print("Friday: reconnect limit reached — giving up after 5 attempts")
+            state.update(\.isError, to: true)
+            wsTask = nil
+            return
+        }
+
+        // Start at 3s (not 1s) to reduce rate-limit risk from rapid storm reconnects.
+        // Cap at 60s so we don't wait forever when the API is temporarily unavailable.
+        let delay = min(3.0 * pow(2.0, Double(reconnectAttempts - 1)), 60.0) // 3, 6, 12, 24, 48…
         print("Friday: reconnect attempt \(reconnectAttempts) in \(Int(delay))s")
         state.update(\.isConnected, to: false)
         state.update(\.isError, to: true)
@@ -211,6 +223,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         You are Friday, Papa's macOS AI assistant in his MacBook notch. Be concise, natural, direct — no filler.
 
         DEV: Use execute_dev_task for code work — always pass project_path, scope to one specific task. Use read_file/write_file for notes only. Use run_shell for grep/find one-liners. Never list or read entire project directories through file tools — use execute_dev_task with a specific question instead.
+        KNOWLEDGE: Use retrieve_knowledge instead of read_file whenever looking up past decisions, project context, session history, standards, or anything stored in notes. retrieve_knowledge is faster, token-efficient, and returns only the relevant excerpt.
         Before execute_dev_task, speak a brief line ("On it", "Let me check"). When it returns, summarise in 1-2 sentences.
 
         Code: ~/projects/ — Notes: ~/Documents/notes/
@@ -232,7 +245,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 ),
                 systemInstruction: SystemInstruction(parts: [TextPart(text: instructions)]),
                 tools: [ToolsList(functionDeclarations: [
-                    Self.executeDevTaskTool,
+                    Self.ragTool, Self.executeDevTaskTool,
                     Self.readFileTool, Self.writeFileTool, Self.listDirectoryTool, Self.runShellTool,
                     Self.weatherTool, Self.timeTool, Self.batteryTool,
                     Self.mapTool, Self.searchTool, Self.musicTool,
@@ -449,6 +462,9 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             result = BatterySkill.getBatteryStatus()
         case "find_nearby_places":
             if let q = call.args["query"] { result = await MapsSkill.findNearby(q) }
+        case "retrieve_knowledge":
+            if let q = call.args["query"] { result = await RAGSkill.retrieve(query: q) }
+
         case "web_search":
             if let q = call.args["query"] { result = await SearchSkill.searchWeb(q) }
         case "control_music":
@@ -807,6 +823,12 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         }
     }
 
+    nonisolated func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
+                                didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+        let reasonStr = reason.flatMap { String(data: $0, encoding: .utf8) } ?? "no reason"
+        print("Friday: WebSocket closed — code=\(closeCode.rawValue) reason=\(reasonStr)")
+    }
+
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
         guard let error else { return }
         if let err = error as NSError?,
@@ -986,6 +1008,16 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 "max_turns":    ParamProperty(type: "STRING", description: "Turn budget for Claude Code. Pass \"5\" for lookups/reads, \"15\" for edits. Default 15.")
             ],
             required: ["task"]
+        )
+    )
+
+    private static let ragTool = FunctionDecl(
+        name: "retrieve_knowledge",
+        description: "Search Papa's notes for relevant information — past decisions, project context, session history, standards, lessons learned. Use this instead of read_file when looking up knowledge from notes. Returns the most relevant excerpts only.",
+        parameters: FunctionParams(
+            type: "object",
+            properties: ["query": ParamProperty(type: "STRING", description: "Natural language description of what you're looking for")],
+            required: ["query"]
         )
     )
 
