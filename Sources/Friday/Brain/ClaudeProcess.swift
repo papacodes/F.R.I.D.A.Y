@@ -10,6 +10,7 @@ import Foundation
 final class ClaudeProcess: @unchecked Sendable {
 
     private var hasSession = false
+    private var isBusy = false
     private var taskCount = 0
     /// After this many tasks, silently drop --continue and start a fresh Claude session.
     /// Prevents unbounded context growth from accumulated tool calls across many dev tasks.
@@ -35,7 +36,7 @@ final class ClaudeProcess: @unchecked Sendable {
 
     /// Prefixed to the first message in each fresh session.
     /// Keeps Claude terse so the result fed back to Gemini stays small.
-    private let preamble = "[You are Friday's dev backend. Each narration step ≤8 words. Final answer: 1-3 plain sentences only — no markdown, no code blocks, no preamble.] "
+    private let preamble = "[You are Friday's dev backend. Each narration step ≤8 words. Final answer: 1-3 plain sentences only — no markdown, no code blocks, no preamble. When your task is fully complete, end your final sentence with [TASK_DONE].] "
 
     /// Ask Claude Code to perform a development task.
     /// - Parameters:
@@ -44,8 +45,12 @@ final class ClaudeProcess: @unchecked Sendable {
     ///   - maxTurns: Turn budget. Use 5 for lookups, 15 for changes. Defaults to 15.
     ///   - onProgress: Called from a background thread as Claude streams output — callers dispatch to MainActor.
     func ask(_ message: String, directory: String? = nil, maxTurns: Int = 15, onProgress: @escaping @Sendable (String) -> Void) async throws -> String {
+        guard !isBusy else { return "[TASK_ERROR] Claude is already busy with another task in this project." }
+        isBusy = true
+        defer { isBusy = false }
         var args: [String] = [
             "--print",
+            "--verbose",
             "--model", "claude-sonnet-4-6",
             "--output-format", "stream-json",
             "--max-turns", "\(maxTurns)"
@@ -110,7 +115,9 @@ final class ClaudeProcess: @unchecked Sendable {
             nonisolated(unsafe) var lastOutputTime = Date()
             nonisolated(unsafe) var done = false
 
-            // Rolling timeout: terminate if no stdout for 180s (generous for large tasks)
+            // Rolling timeout: terminate if no stdout for 180s (generous for large tasks).
+            // This alone isn't enough — --verbose mode outputs rate-limit retry messages every few
+            // seconds, which resets lastOutputTime and keeps the process alive indefinitely.
             let timeoutTimer = DispatchSource.makeTimerSource(queue: .global())
             timeoutTimer.schedule(deadline: .now() + 30, repeating: 30)
             timeoutTimer.setEventHandler {
@@ -120,6 +127,18 @@ final class ClaudeProcess: @unchecked Sendable {
                 }
             }
             timeoutTimer.resume()
+
+            // Hard wall-clock cap: kill after 300s regardless of output volume.
+            // Prevents --verbose rate-limit retries from hanging tasks indefinitely.
+            let hardDeadline = DispatchSource.makeTimerSource(queue: .global())
+            hardDeadline.schedule(deadline: .now() + 300)
+            hardDeadline.setEventHandler {
+                if !done {
+                    print("Friday: claude hard timeout — 300s wall clock exceeded")
+                    p.terminate()
+                }
+            }
+            hardDeadline.resume()
 
             stdout.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
@@ -136,7 +155,12 @@ final class ClaudeProcess: @unchecked Sendable {
 
                     if let parsed = parseStreamLine(line) {
                         if let result = parsed.result { finalResult = result }
-                        if let progress = parsed.progress { onProgress(progress) }
+                        if let progress = parsed.progress {
+                            // Throttle UI updates to 10Hz — prevents main thread saturation during heavy output
+                            if Date().timeIntervalSince(lastOutputTime) > 0.1 {
+                                onProgress(progress)
+                            }
+                        }
                     }
                 }
             }
@@ -144,6 +168,7 @@ final class ClaudeProcess: @unchecked Sendable {
             p.terminationHandler = { _ in
                 done = true
                 timeoutTimer.cancel()
+                hardDeadline.cancel()
                 stdout.fileHandleForReading.readabilityHandler = nil
 
                 if !lineBuffer.isEmpty, let parsed = parseStreamLine(lineBuffer) {
@@ -162,6 +187,7 @@ final class ClaudeProcess: @unchecked Sendable {
             do { try p.run() }
             catch {
                 timeoutTimer.cancel()
+                hardDeadline.cancel()
                 cont.resume(throwing: error)
             }
         }

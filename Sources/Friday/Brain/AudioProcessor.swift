@@ -2,6 +2,8 @@
 import Foundation
 
 final class AudioProcessor: @unchecked Sendable {
+    private var pcmBuffer = Data()
+    private let maxBufferSize = 3200 // 100ms at 16kHz (2 bytes per sample)
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
     private var targetFormat: AVAudioFormat?
@@ -88,10 +90,19 @@ final class AudioProcessor: @unchecked Sendable {
                 }
 
                 if status == .haveData, outBuf.frameLength > 0, let int16Data = outBuf.int16ChannelData {
-                    let pcmData = Data(bytes: int16Data[0], count: Int(outBuf.frameLength) * 2)
-                    let b64 = pcmData.base64EncodedString()
-                    let msg = #"{"realtime_input":{"media_chunks":[{"mime_type":"audio/pcm;rate=16000","data":""# + b64 + #""}]}}"#
-                    ws.send(.string(msg)) { _ in }
+                    let chunk = Data(bytes: int16Data[0], count: Int(outBuf.frameLength) * 2)
+                    self.stateLock.lock()
+                    self.pcmBuffer.append(chunk)
+                    if self.pcmBuffer.count >= self.maxBufferSize {
+                        let toSend = self.pcmBuffer
+                        self.pcmBuffer = Data()
+                        self.stateLock.unlock()
+                        let b64 = toSend.base64EncodedString()
+                        let msg = #"{"realtime_input":{"media_chunks":[{"mime_type":"audio/pcm;rate=16000","data":""# + b64 + #""}]}}"#
+                        ws.send(.string(msg)) { _ in }
+                    } else {
+                        self.stateLock.unlock()
+                    }
                 }
             }
         }

@@ -21,9 +21,16 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     /// Set before any intentional disconnect — prevents receiveLoop from triggering reconnect.
     private var intentionalStop = false
 
+    // Audio state watchdog — detects stuck isSpeaking/isThinking after engine failures or missed turnComplete.
+    private var lastAudioTime = Date.distantPast
+    private var stateWatchdog: Task<Void, Never>?
+
     // Each receiveLoop captures its own ID at launch. When refreshSession invalidates the socket,
     // it stamps a new ID — stale loops see the mismatch and exit without triggering reconnect.
     private var receiveLoopId = UUID()
+
+    // Set by refreshSession() so setupComplete knows to send a greeting after the clean reconnect.
+    private var pendingRefreshGreeting = false
 
     // Session health — proactive context limit awareness.
     // Gemini Live sessions drop at ~15 min or after heavy context use (long tool results).
@@ -71,6 +78,9 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     }
 
     func stop() {
+        stateWatchdog?.cancel()
+        stateWatchdog = nil
+        isAudioSetup = false   // reset so setupOutputAudio() re-runs on next connect()
         isConnecting = false
         reconnectAttempts = 0
         intentionalStop = true
@@ -169,6 +179,12 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         print("Friday: reconnect attempt \(reconnectAttempts) in \(Int(delay))s")
         state.update(\.isConnected, to: false)
         state.update(\.isError, to: true)
+        // Clear stuck visual states — dropped connection means nothing is playing or thinking
+        state.update(\.isSpeaking, to: false)
+        state.update(\.isThinking, to: false)
+        state.update(\.isListening, to: false)
+        state.update(\.volume, to: 0.0)
+        audioProcessor.isMuted = false
 
         try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
 
@@ -201,6 +217,8 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
         IMPORTANT: Never read entire project directories through file tools — that causes rate limits. For large codebases, use execute_dev_task with a specific question, or run_shell with grep.
 
+        TASK ACKNOWLEDGMENT: Before calling execute_dev_task, always speak a brief line to Papa first (e.g. "On it", "Looking into that now", "Let me check that for you"). When execute_dev_task returns, always summarize the result in 1-2 sentences — never silently pass it on. Silent tools that need no acknowledgment: get_time, get_battery_status, get_ui_state, get_weather.
+
         Code lives in ~/projects/. Notes live in ~/Documents/notes/.
         Call disconnect_session when Papa says goodbye or the conversation is finished.
         Call refresh_session when Papa says "reconnect" or "fresh session", or when you warn him about context limits. Always call manage_notes to save session notes BEFORE calling refresh_session.
@@ -213,7 +231,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             setup: SetupPayload(
                 model: "models/gemini-2.5-flash-native-audio-preview-12-2025",
                 generationConfig: GenerationConfig(
-                    responseModalities: ["audio"],
+                    responseModalities: ["AUDIO"],
                     speechConfig: nil,
                     inputAudioTranscription: nil,
                     outputAudioTranscription: nil
@@ -262,7 +280,8 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         do {
             let msg = try decoder.decode(ServerMessage.self, from: data)
             
-            if msg.error != nil {
+            if let err = msg.error {
+                print("Friday: Server error — [\(err.code ?? 0)] \(err.status ?? "UNKNOWN"): \(err.message ?? "No message")")
                 state.update(\.isError, to: true)
                 return
             }
@@ -281,7 +300,10 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                         else if self?.state.isSpeaking == false { self?.state.update(\.volume, to: 0.0) }
                     }
                 }
-                if wasReconnect {
+                if pendingRefreshGreeting {
+                    pendingRefreshGreeting = false
+                    Task { await self.sendRefreshGreeting() }
+                } else if wasReconnect {
                     Task { await self.sendReconnectNotice() }
                 }
             }
@@ -290,9 +312,16 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 if content.turnComplete == true {
                     turnCount += 1
                     state.update(\.isSpeaking, to: false)
-                    audioProcessor.isMuted = false
                     state.update(\.volume, to: 0.0)
                     checkSessionHealth()
+                    // Delay mic unmute — playerNode still has buffered audio queued after turnComplete arrives.
+                    // Unmuting immediately causes the mic to pick up playback tail and falsely trigger VAD,
+                    // which interrupts Friday mid-sentence. 600ms gives the buffer time to drain.
+                    let proc = audioProcessor
+                    Task {
+                        try? await Task.sleep(nanoseconds: 600_000_000)
+                        proc.isMuted = false
+                    }
                     // Intentional stop (voice goodbye or UI dismiss) — wait for audio to finish then close
                     if intentionalStop {
                         Task { [weak self] in
@@ -319,8 +348,6 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             }
 
             if let toolCall = msg.toolCall {
-                // Unmute mic so Papa can interrupt while tools are running
-                audioProcessor.isMuted = false
                 for call in toolCall.functionCalls {
                     Task { await handleToolCall(call) }
                 }
@@ -328,12 +355,26 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         } catch { /* noise */ }
     }
 
+    private var isAudioSetup = false
     private func setupOutputAudio() {
+        guard !isAudioSetup else { return }
+        isAudioSetup = true
+
         outputEngine.attach(playerNode)
         outputEngine.connect(playerNode, to: outputEngine.mainMixerNode, format: playbackFormat)
         outputEngine.prepare()
         try? outputEngine.start()
         playerNode.play()
+        startStateWatchdog()
+
+        // Restart engine automatically when macOS changes audio routing (headphones in/out, sleep, etc.)
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name.AVAudioEngineConfigurationChange,
+            object: outputEngine,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.recoverAudioEngine() }
+        }
     }
 
     private func playPCMChunk(_ data: Data) {
@@ -352,9 +393,16 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         }
         let rms = sqrt(sum / Float(max(frameCount, 1)))
         state.update(\.volume, to: rms)
+        lastAudioTime = Date()
 
-        // Restart engine if macOS interrupted it during a long tool call
-        if !outputEngine.isRunning { try? outputEngine.start() }
+        // Restart engine if macOS interrupted it (route change, sleep, long tool call, etc.)
+        if !outputEngine.isRunning {
+            do { try outputEngine.start() } catch {
+                print("Friday: audio engine restart failed — \(error). Attempting full recovery.")
+                recoverAudioEngine()
+                return  // drop this chunk — next chunk will arrive if Gemini is still speaking
+            }
+        }
         if !playerNode.isPlaying { playerNode.play() }
 
         playerNode.scheduleBuffer(buffer)
@@ -362,6 +410,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
     private func handleToolCall(_ call: FunctionCall) async {
         state.update(\.isThinking, to: true)
+        defer { state.update(\.isThinking, to: false) }
         var result = "Task complete."
         
         switch call.name {
@@ -466,7 +515,15 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                             FridayState.shared.updateTask(id: projectKey, step: progress)
                         }
                     }
-                    state.completeTask(id: projectKey)
+                    // [TASK_DONE] is the source of truth — Claude appends it only when fully complete.
+                    // If absent, the process exited without confirming (turn limit hit, silent fail, etc.).
+                    if result.contains("[TASK_DONE]") {
+                        result = result.replacingOccurrences(of: "[TASK_DONE]", with: "")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        state.completeTask(id: projectKey)
+                    } else {
+                        state.errorTask(id: projectKey, message: "Ended without confirmation — may be incomplete")
+                    }
                     state.update(\.transcript, to: "")
                     // Truncate before sending back — long results burn context fast and cause disconnects.
                     // Keep head (context) + tail (spoken summary the preamble asks Claude to put last).
@@ -563,17 +620,58 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             result = "Tool not found."
         }
 
-        state.update(\.isThinking, to: false)
         let response = ToolResponseMessage(toolResponse: ToolResponseBody(functionResponses: [
             FunctionResponseItem(id: call.id, name: call.name, response: ["output": result])
         ]))
         await sendEncoded(response)
+        turnCount += 1
+        checkSessionHealth()
+    }
+
+    /// Periodic watchdog that clears stuck isSpeaking after 4s of no audio chunks.
+    /// Guards against: engine dying mid-stream, missed turnComplete, WebSocket disconnect mid-speech.
+    private func startStateWatchdog() {
+        stateWatchdog?.cancel()
+        stateWatchdog = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled else { break }
+                if self.state.isSpeaking && Date().timeIntervalSince(self.lastAudioTime) > 4 {
+                    print("Friday: watchdog — clearing stuck isSpeaking (no audio for 4s)")
+                    self.state.update(\.isSpeaking, to: false)
+                    self.audioProcessor.isMuted = false
+                    self.state.update(\.volume, to: 0.0)
+                }
+            }
+        }
+    }
+
+    /// Full audio engine recovery — called after configurationChange or failed restart.
+    private func recoverAudioEngine() {
+        print("Friday: recovering audio engine")
+        playerNode.stop()
+        outputEngine.stop()
+        do {
+            try outputEngine.start()
+            playerNode.play()
+            print("Friday: audio engine recovered")
+        } catch {
+            print("Friday: audio engine recovery failed — \(error)")
+        }
     }
 
     private func sendReconnectNotice() async {
         // Fresh session after a drop — session context was lost, keep it honest and brief
         let msg = ClientContentMessage(clientContent: ClientContent(turns: [
             ContentTurn(role: "user", parts: [TextPart(text: "System: Connection was interrupted and just restored. Tell Papa you're back — one sentence, no apology.")])
+        ], turnComplete: true))
+        await sendEncoded(msg)
+    }
+
+    private func sendRefreshGreeting() async {
+        // Session was intentionally refreshed (context limit) — acknowledge cleanly and resume
+        let msg = ClientContentMessage(clientContent: ClientContent(turns: [
+            ContentTurn(role: "user", parts: [TextPart(text: "System: Session was refreshed for a clean context. Tell Papa you're back and ready — one sentence.")])
         ], turnComplete: true))
         await sendEncoded(msg)
     }
@@ -614,6 +712,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         let elapsed = sessionStartTime.map { Date().timeIntervalSince($0) } ?? 0
         guard elapsed >= sessionWarnMinutes || turnCount >= sessionWarnTurns else { return }
         hasWarnedAboutContext = true
+        print("Friday: nearing context limit (\(turnCount) turns, \(Int(elapsed/60))m). Warning Papa.")
 
         let mins = Int(elapsed / 60)
         // Keep prompt minimal — avoid triggering a manage_notes tool chain here which burns 2 extra turns.
@@ -654,6 +753,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         sessionStartTime = nil
         turnCount = 0
         hasWarnedAboutContext = false
+        isAudioSetup = false   // reset so setupOutputAudio() re-runs on reconnect
 
         // Drop all ClaudeProcess sessions — fresh Gemini context should pair with fresh Claude context.
         // New instances are created on demand when the next execute_dev_task arrives.
@@ -662,6 +762,10 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         state.update(\.isConnected, to: false)
         state.update(\.isSpeaking, to: false)
         state.update(\.isThinking, to: false)
+
+        // Ensure mic is live after reconnect — it may have been muted while Gemini was speaking.
+        audioProcessor.isMuted = false
+        pendingRefreshGreeting = true
 
         // Brief pause so the stale session's delegate callbacks fire before we open the new one.
         // Without this, the delegate's didCompleteWithError can reset isConnecting on the new session.

@@ -86,7 +86,15 @@ struct NotchAssistantMiniView: View {
     @ViewBuilder
     private var fridayTopRightWidget: some View {
         if let alert = state.activeAlert {
-            CompactBatteryRing(value: alert.value, color: alert.color, isCharging: alert.isCharging)
+            if alert.style == .bar {
+                // Volume / brightness — linear bar matches HorizontalNotchView treatment
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.1)).frame(width: 50, height: 4)
+                    Capsule().fill(alert.color).frame(width: CGFloat(alert.value * 50.0), height: 4)
+                }
+            } else {
+                CompactBatteryRing(value: alert.value, color: alert.color, isCharging: alert.isCharging)
+            }
         } else {
             BatteryIndicator().opacity(0.6)
         }
