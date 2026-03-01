@@ -161,4 +161,36 @@ struct FunctionCall: Decodable {
     let id: String
     let name: String
     let args: [String: String]
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id   = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+
+        // Gemini sometimes sends number-typed params (e.g. max_turns: 15) even when the tool
+        // declares them as STRING. A plain [String: String] decode throws on the first integer
+        // value, which causes the entire message to be silently dropped by the outer catch-all.
+        // This custom decoder coerces all arg values to strings to prevent that failure.
+        var result: [String: String] = [:]
+        if let raw = try? c.nestedContainer(keyedBy: DynamicKey.self, forKey: .args) {
+            for key in raw.allKeys {
+                if let s = try? raw.decode(String.self, forKey: key) {
+                    result[key.stringValue] = s
+                } else if let n = try? raw.decode(Double.self, forKey: key) {
+                    result[key.stringValue] = n == n.rounded() ? String(Int(n)) : String(n)
+                } else if let b = try? raw.decode(Bool.self, forKey: key) {
+                    result[key.stringValue] = b ? "true" : "false"
+                }
+            }
+        }
+        args = result
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, args }
+    private struct DynamicKey: CodingKey {
+        let stringValue: String
+        init?(stringValue: String) { self.stringValue = stringValue }
+        var intValue: Int? { nil }
+        init?(intValue: Int) { nil }
+    }
 }

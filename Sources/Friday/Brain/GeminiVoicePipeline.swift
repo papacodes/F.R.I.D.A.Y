@@ -39,7 +39,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     private var turnCount = 0
     private var hasWarnedAboutContext = false
     private let sessionWarnMinutes: TimeInterval = 10 * 60
-    private let sessionWarnTurns = 20
+    private let sessionWarnTurns = 15
 
     private let outputEngine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
@@ -208,22 +208,16 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             : "\n\n---\n\n\(state.longTermMemoryContext)"
 
         let instructions = """
-        You are Friday, Papa's macOS AI assistant living in his MacBook's notch. Be concise, natural, and direct — no filler phrases.
+        You are Friday, Papa's macOS AI assistant in his MacBook notch. Be concise, natural, direct — no filler.
 
-        DEV TOOLS:
-        - execute_dev_task: Use for tasks requiring code understanding, multi-step analysis, or making changes to a project. Always pass project_path (e.g. ~/projects/friday). Keep tasks tightly scoped — one specific question or change, not "look at the whole project". Claude Code handles the execution and reports back.
-        - read_file, write_file, list_directory: Use for direct notes and simple single-file reads. Not for code projects.
-        - run_shell: Use for targeted searches (grep, find) and quick one-liners. Always pass directory for project commands.
+        DEV: Use execute_dev_task for code work — always pass project_path, scope to one specific task. Use read_file/write_file for notes only. Use run_shell for grep/find one-liners. Never list or read entire project directories through file tools — use execute_dev_task with a specific question instead.
+        Before execute_dev_task, speak a brief line ("On it", "Let me check"). When it returns, summarise in 1-2 sentences.
 
-        IMPORTANT: Never read entire project directories through file tools — that causes rate limits. For large codebases, use execute_dev_task with a specific question, or run_shell with grep.
+        Code: ~/projects/ — Notes: ~/Documents/notes/
+        Project paths: friday → ~/projects/friday | oats → ~/projects/telesure/oats/
+        Call disconnect_session when Papa says goodbye. Call refresh_session only when Papa explicitly asks — always save notes with manage_notes first.
 
-        TASK ACKNOWLEDGMENT: Before calling execute_dev_task, always speak a brief line to Papa first (e.g. "On it", "Looking into that now", "Let me check that for you"). When execute_dev_task returns, always summarize the result in 1-2 sentences — never silently pass it on. Silent tools that need no acknowledgment: get_time, get_battery_status, get_ui_state, get_weather.
-
-        Code lives in ~/projects/. Notes live in ~/Documents/notes/.
-        Call disconnect_session when Papa says goodbye or the conversation is finished.
-        Call refresh_session when Papa says "reconnect" or "fresh session", or when you warn him about context limits. Always call manage_notes to save session notes BEFORE calling refresh_session.
-
-        UI CONTROL: You are aware of your own UI. Use get_ui_state to check what's showing before taking action. Use control_ui to expand, collapse, switch tabs, or dismiss completed tasks. When Papa asks about music, switch to the music tab. When he asks about calendar or schedule, switch to the calendar tab. If he asks you to expand and you're already expanded, tell him. If a skill fails (e.g. calendar add), tell Papa and suggest opening the relevant app manually.
+        UI: Use get_ui_state before acting. Use control_ui to expand/collapse/switch tabs/dismiss tasks. Switch to the relevant tab when Papa asks about music, calendar, reminders, or notes. If a skill fails, say so and suggest the relevant app.
         \(knowledgeBase)
         """
 
@@ -352,7 +346,13 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                     Task { await handleToolCall(call) }
                 }
             }
-        } catch { /* noise */ }
+        } catch {
+            // Most failures here are binary audio frames that aren't JSON — expected, ignore.
+            // Log only if the data looks like it should have been JSON (starts with '{').
+            if data.first == UInt8(ascii: "{") {
+                print("Friday: failed to decode server message — \(error)")
+            }
+        }
     }
 
     private var isAudioSetup = false
@@ -409,6 +409,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func handleToolCall(_ call: FunctionCall) async {
+        print("Friday: tool call → \(call.name) args=\(call.args.keys.sorted().joined(separator: ","))")
         state.update(\.isThinking, to: true)
         defer { state.update(\.isThinking, to: false) }
         var result = "Task complete."
@@ -497,46 +498,49 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 }
             }
         case "execute_dev_task":
-            if let task = call.args["task"] {
-                let projectPath = call.args["project_path"]
-                let projectKey = projectPath ?? "default"
-                let taskLabel = projectPath
-                    .map { URL(fileURLWithPath: $0.replacingOccurrences(of: "~", with: "")).lastPathComponent }
-                    ?? "task"
-                let claude = claudeForProject(projectKey)
+            guard let task = call.args["task"] else {
+                result = "[TASK_ERROR] execute_dev_task called without a task argument. Args received: \(call.args)"
+                print("Friday: execute_dev_task missing 'task' arg — args=\(call.args)")
+                break
+            }
+            let projectPath = call.args["project_path"]
+            let projectKey = projectPath ?? "default"
+            let taskLabel = projectPath
+                .map { URL(fileURLWithPath: $0.replacingOccurrences(of: "~", with: "")).lastPathComponent }
+                ?? "task"
+            let claude = claudeForProject(projectKey)
 
-                state.startTask(id: projectKey, label: taskLabel)
-                state.addActivity(type: .info, title: "Claude Code", subtitle: task)
+            state.startTask(id: projectKey, label: taskLabel)
+            state.addActivity(type: .info, title: "Claude Code", subtitle: task)
 
-                let maxTurns = call.args["max_turns"].flatMap { Int($0) } ?? 15
-                do {
-                    result = try await claude.ask(task, directory: projectPath, maxTurns: maxTurns) { progress in
-                        Task { @MainActor in
-                            FridayState.shared.updateTask(id: projectKey, step: progress)
-                        }
+            let maxTurns = call.args["max_turns"].flatMap { Int($0) } ?? 15
+            do {
+                result = try await claude.ask(task, directory: projectPath, maxTurns: maxTurns) { progress in
+                    Task { @MainActor in
+                        FridayState.shared.updateTask(id: projectKey, step: progress)
                     }
-                    // [TASK_DONE] is the source of truth — Claude appends it only when fully complete.
-                    // If absent, the process exited without confirming (turn limit hit, silent fail, etc.).
-                    if result.contains("[TASK_DONE]") {
-                        result = result.replacingOccurrences(of: "[TASK_DONE]", with: "")
-                            .trimmingCharacters(in: .whitespacesAndNewlines)
-                        state.completeTask(id: projectKey)
-                    } else {
-                        state.errorTask(id: projectKey, message: "Ended without confirmation — may be incomplete")
-                    }
-                    state.update(\.transcript, to: "")
-                    // Truncate before sending back — long results burn context fast and cause disconnects.
-                    // Keep head (context) + tail (spoken summary the preamble asks Claude to put last).
-                    let limit = 1500
-                    if result.count > limit {
-                        let head = String(result.prefix(400))
-                        let tail = String(result.suffix(1000))
-                        result = "\(head)\n…[truncated]\n\(tail)"
-                    }
-                } catch {
-                    state.errorTask(id: projectKey, message: error.localizedDescription)
-                    result = "Claude Code failed: \(error.localizedDescription)"
                 }
+                // [TASK_DONE] is the source of truth — Claude appends it only when fully complete.
+                // If absent, the process exited without confirming (turn limit hit, silent fail, etc.).
+                if result.contains("[TASK_DONE]") {
+                    result = result.replacingOccurrences(of: "[TASK_DONE]", with: "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    state.completeTask(id: projectKey)
+                } else {
+                    state.errorTask(id: projectKey, message: "Ended without confirmation — may be incomplete")
+                }
+                state.update(\.transcript, to: "")
+                // Truncate before sending back — long results burn context fast and cause disconnects.
+                // Keep head (context) + tail (spoken summary the preamble asks Claude to put last).
+                let limit = 1500
+                if result.count > limit {
+                    let head = String(result.prefix(400))
+                    let tail = String(result.suffix(1000))
+                    result = "\(head)\n…[truncated]\n\(tail)"
+                }
+            } catch {
+                state.errorTask(id: projectKey, message: error.localizedDescription)
+                result = "Claude Code failed: \(error.localizedDescription)"
             }
 
         case "control_ui":
@@ -715,9 +719,9 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         print("Friday: nearing context limit (\(turnCount) turns, \(Int(elapsed/60))m). Warning Papa.")
 
         let mins = Int(elapsed / 60)
-        // Keep prompt minimal — avoid triggering a manage_notes tool chain here which burns 2 extra turns.
-        // Papa can explicitly say "save notes" or "reconnect" if he wants to act on the warning.
-        let prompt = "System: \(mins)min / \(turnCount) turns — approaching context limit. Tell Papa in one sentence that a fresh reconnect is available whenever he's ready."
+        // Passive warning only — do NOT suggest or offer a reconnect. Papa decides when to reconnect.
+        // Gemini should NOT call refresh_session proactively; only when Papa explicitly asks.
+        let prompt = "System: \(mins)min / \(turnCount) turns in — context window is getting full. Mention this briefly to Papa in one sentence. Do not offer to reconnect or suggest refresh_session."
         Task { await sendSystemMessage(prompt) }
     }
 

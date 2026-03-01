@@ -101,12 +101,13 @@ struct NotchAssistantMiniView: View {
     }
     
     private var statusLabel: String {
-        if state.isError    { return "Error" }
-        if state.isThinking { return "Thinking" }
-        if state.isSpeaking { return "Speaking" }
+        if state.isError        { return "Error" }
+        if state.isThinking     { return "Thinking" }
+        // Coding takes priority over Speaking/Listening — dev task is the dominant state.
+        // If user engages mid-task and Gemini processes it, isThinking fires above and shows "Thinking".
         if state.isDevTaskRunning { return "Coding" }
-        if state.isListening { return "Listening" }
-        // In session but VAD is idle — pipeline is live, waiting for input
+        if state.isSpeaking     { return "Speaking" }
+        if state.isListening    { return "Listening" }
         return "Waiting"
     }
 }

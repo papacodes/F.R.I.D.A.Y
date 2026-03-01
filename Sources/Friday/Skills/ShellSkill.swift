@@ -5,7 +5,7 @@ import Foundation
 // All execution happens off the main thread — safe to await from @MainActor.
 struct ShellSkill {
 
-    private static let maxOutputLength = 6000
+    private static let maxOutputLength = 2000
     private static let timeoutSeconds: TimeInterval = 90
 
     static func run(_ command: String, directory: String? = nil) async -> String {

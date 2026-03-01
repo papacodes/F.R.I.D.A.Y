@@ -103,6 +103,16 @@ final class ClaudeProcess: @unchecked Sendable {
             // Strip only CLAUDE_SESSION vars to prevent context bleed — keep auth vars intact
             var env = ProcessInfo.processInfo.environment
             env.removeValue(forKey: "CLAUDE_SESSION_ID")
+
+            // Augment PATH with known dev tool locations that may be absent when Friday
+            // launches from a GUI context or a shell that hasn't sourced the full profile.
+            let extraPaths = [
+                "/Users/papa/Projects/dev-tools/flutter/bin",  // Flutter / Dart
+                "/opt/homebrew/bin",                           // Homebrew (M-series)
+                "/usr/local/bin"                               // Homebrew (Intel), misc
+            ]
+            let existingPath = env["PATH"] ?? "/usr/bin:/bin"
+            env["PATH"] = extraPaths.joined(separator: ":") + ":" + existingPath
             p.environment = env
 
             let stdout = Pipe()
