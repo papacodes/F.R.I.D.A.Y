@@ -35,8 +35,8 @@ final class ClaudeProcess: @unchecked Sendable {
     private static let notesDirectory = "/Users/papa/Documents/notes"
 
     /// Prefixed to the first message in each fresh session.
-    /// Keeps Claude terse so the result fed back to Gemini stays small.
-    private let preamble = "[You are Friday's dev backend. Each narration step ≤8 words. Final answer: 1-3 plain sentences only — no markdown, no code blocks, no preamble. When your task is fully complete, end your final sentence with [TASK_DONE].] "
+    /// Work silently — tool calls surface in the UI. Only the final summary goes back to Gemini.
+    private let preamble = "[You are Friday's dev backend. Work silently — no commentary between tool calls. When done, respond in 1-2 plain sentences only — no markdown, no code blocks, no preamble. End your final sentence with [TASK_DONE].] "
 
     /// Ask Claude Code to perform a development task.
     /// - Parameters:
@@ -112,7 +112,8 @@ final class ClaudeProcess: @unchecked Sendable {
 
             nonisolated(unsafe) var finalResult = ""
             nonisolated(unsafe) var lineBuffer = ""
-            nonisolated(unsafe) var lastOutputTime = Date()
+            nonisolated(unsafe) var lastOutputTime = Date()   // tracks last data arrival — for no-output timeout
+            nonisolated(unsafe) var lastProgressTime = Date.distantPast  // tracks last onProgress call — for throttle
             nonisolated(unsafe) var done = false
 
             // Rolling timeout: terminate if no stdout for 180s (generous for large tasks).
@@ -156,8 +157,12 @@ final class ClaudeProcess: @unchecked Sendable {
                     if let parsed = parseStreamLine(line) {
                         if let result = parsed.result { finalResult = result }
                         if let progress = parsed.progress {
-                            // Throttle UI updates to 10Hz — prevents main thread saturation during heavy output
-                            if Date().timeIntervalSince(lastOutputTime) > 0.1 {
+                            // Throttle UI updates to 10Hz — use lastProgressTime, not lastOutputTime.
+                            // lastOutputTime is reset on every data chunk so checking it here always
+                            // gives ~0ms — which permanently suppressed onProgress. Bug fixed.
+                            let now = Date()
+                            if now.timeIntervalSince(lastProgressTime) > 0.1 {
+                                lastProgressTime = now
                                 onProgress(progress)
                             }
                         }
