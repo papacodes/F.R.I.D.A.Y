@@ -24,6 +24,9 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     // Audio state watchdog — detects stuck isSpeaking/isThinking after engine failures or missed turnComplete.
     private var lastAudioTime = Date.distantPast
     private var stateWatchdog: Task<Void, Never>?
+    /// Debounces isThinking=false across back-to-back tool calls.
+    /// Without this, the brief gap between sequential tool calls flashes the orb back to idle.
+    private var thinkingClearTask: Task<Void, Never>?
 
     // Each receiveLoop captures its own ID at launch. When refreshSession invalidates the socket,
     // it stamps a new ID — stale loops see the mismatch and exit without triggering reconnect.
@@ -300,6 +303,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 sessionStartTime = Date()
                 turnCount = 0
                 hasWarnedAboutContext = false
+                state.update(\.isContextWarning, to: false)
                 audioProcessor.start(ws: wsTask) { [weak self] active, rms in
                     DispatchQueue.main.async {
                         self?.state.update(\.isListening, to: active)
@@ -318,8 +322,14 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             if let content = msg.serverContent {
                 if content.turnComplete == true {
                     turnCount += 1
-                    state.update(\.isSpeaking, to: false)
                     state.update(\.volume, to: 0.0)
+                    // Delay isSpeaking clear — playerNode still has buffered audio queued when
+                    // turnComplete arrives. Clearing immediately causes the orb to snap back to
+                    // idle while audio is still audibly playing. 1.2s covers typical buffer drain.
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(nanoseconds: 1_200_000_000)
+                        self?.state.update(\.isSpeaking, to: false)
+                    }
                     checkSessionHealth()
                     // Delay mic unmute — playerNode still has buffered audio queued after turnComplete arrives.
                     // Unmuting immediately causes the mic to pick up playback tail and falsely trigger VAD,
@@ -423,8 +433,9 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
     private func handleToolCall(_ call: FunctionCall) async {
         print("Friday: tool call → \(call.name) args=\(call.args.keys.sorted().joined(separator: ","))")
+        // Cancel any pending clear — a new tool call is starting, keep isThinking true.
+        thinkingClearTask?.cancel()
         state.update(\.isThinking, to: true)
-        defer { state.update(\.isThinking, to: false) }
         var result = "Task complete."
         
         switch call.name {
@@ -646,6 +657,15 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         await sendEncoded(response)
         turnCount += 1
         checkSessionHealth()
+
+        // Debounced clear — wait 400ms before dropping isThinking.
+        // If another tool call starts within that window, it cancels this task and
+        // isThinking never drops, preventing the orb from flashing idle between calls.
+        thinkingClearTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            self?.state.update(\.isThinking, to: false)
+        }
     }
 
     /// Periodic watchdog that clears stuck isSpeaking after 4s of no audio chunks.
@@ -656,8 +676,8 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard !Task.isCancelled else { break }
-                if self.state.isSpeaking && Date().timeIntervalSince(self.lastAudioTime) > 4 {
-                    print("Friday: watchdog — clearing stuck isSpeaking (no audio for 4s)")
+                if self.state.isSpeaking && Date().timeIntervalSince(self.lastAudioTime) > 8 {
+                    print("Friday: watchdog — clearing stuck isSpeaking (no audio for 8s)")
                     self.state.update(\.isSpeaking, to: false)
                     self.audioProcessor.isMuted = false
                     self.state.update(\.volume, to: 0.0)
@@ -732,6 +752,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         let elapsed = sessionStartTime.map { Date().timeIntervalSince($0) } ?? 0
         guard elapsed >= sessionWarnMinutes || turnCount >= sessionWarnTurns else { return }
         hasWarnedAboutContext = true
+        state.update(\.isContextWarning, to: true)
         print("Friday: nearing context limit (\(turnCount) turns, \(Int(elapsed/60))m). Warning Papa.")
 
         let mins = Int(elapsed / 60)
@@ -773,6 +794,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         sessionStartTime = nil
         turnCount = 0
         hasWarnedAboutContext = false
+        state.update(\.isContextWarning, to: false)
         isAudioSetup = false   // reset so setupOutputAudio() re-runs on reconnect
 
         // Drop all ClaudeProcess sessions — fresh Gemini context should pair with fresh Claude context.

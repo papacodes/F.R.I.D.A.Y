@@ -164,9 +164,12 @@ struct MiniOrbView: View {
         .onAppear { withAnimation(.linear(duration: 4).repeatForever(autoreverses: false)) { rotation = 360 } }
     }
     
-    private var glowColor: Color { isError ? .red : (isDevTask ? .orange : .cyan) }
-    private var primaryColor: Color { isError ? .red : (isDevTask ? .orange : .cyan) }
-    private var secondaryColor: Color { isError ? .red : (isDevTask ? .yellow : Color(red: 0.7, green: 0.3, blue: 1.0)) }
+    // Waiting = connected, no active session, no task, no error
+    private var isWaiting: Bool { isConnected && !isActive && !isDevTask && !isError }
+
+    private var glowColor: Color    { isError ? .red : isDevTask ? .orange : isWaiting ? .green : .cyan }
+    private var primaryColor: Color { isError ? .red : isDevTask ? .orange : isWaiting ? Color(red: 0.1, green: 0.75, blue: 0.35) : .cyan }
+    private var secondaryColor: Color { isError ? .red : isDevTask ? .yellow : isWaiting ? Color(red: 0.0, green: 0.55, blue: 0.25) : Color(red: 0.7, green: 0.3, blue: 1.0) }
 }
 
 // MARK: - Battery Indicator

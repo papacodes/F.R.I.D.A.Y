@@ -83,27 +83,36 @@ struct SiriOrbView: View {
             .blur(radius: 10)
     }
     
+    /// Waiting = connected, nothing happening. Lowest priority — checked last.
+    private var isWaiting: Bool {
+        isConnected && !isThinking && !isError && !isDevTask && volume < 0.01
+    }
+
     private var glowColor: Color {
-        if isError { return .red }
+        if isError   { return .red }
         if isDevTask { return .orange }
+        if isWaiting { return .green }
         return .cyan
     }
-    
+
     private var primaryColor: Color {
-        if isError { return Color(red: 0.8, green: 0, blue: 0) } // Blood Red
+        if isError   { return Color(red: 0.8, green: 0, blue: 0) }
         if isDevTask { return .orange }
+        if isWaiting { return Color(red: 0.1, green: 0.75, blue: 0.35) }
         return Color(red: 0, green: 0.4, blue: 1)
     }
-    
+
     private var secondaryColor: Color {
-        if isError { return .red }
+        if isError   { return .red }
         if isDevTask { return .yellow }
+        if isWaiting { return Color(red: 0.0, green: 0.55, blue: 0.25) }
         return .cyan
     }
-    
+
     private var accentColor: Color {
-        if isError { return .orange }
+        if isError   { return .orange }
         if isDevTask { return .red }
+        if isWaiting { return Color(red: 0.2, green: 0.9, blue: 0.5) }
         return .purple
     }
 }

@@ -78,6 +78,11 @@ struct NotchAssistantMiniView: View {
             Image(systemName: alert.icon).font(.system(size: 13, weight: .bold)).foregroundColor(alert.color)
         } else if state.isPlayingMusic && !state.isActive {
             MiniWaveform(isActive: true, color: .white.opacity(0.6)).frame(width: 32, height: 14)
+        } else if state.isContextWarning {
+            // Context warning — same position as system alerts, no layout disruption
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.yellow.opacity(0.8))
         } else {
             Spacer().frame(width: 1)
         }

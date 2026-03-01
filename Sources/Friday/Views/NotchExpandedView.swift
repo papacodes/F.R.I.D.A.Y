@@ -98,8 +98,19 @@ struct NotchExpandedView: View {
             .frame(width: 660, height: 280)
             .offset(y: 20)
             .zIndex(1)
+            // Layer 3: Context warning badge — bottom center, floats over all content, no layout impact
+            if state.isContextWarning {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.yellow.opacity(0.75))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .padding(.bottom, 14)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
         }
         .frame(width: 660, height: 280)
         .animation(.spring(response: 0.5, dampingFraction: 0.85), value: state.activeTab)
+        .animation(.easeInOut(duration: 0.4), value: state.isContextWarning)
     }
 }

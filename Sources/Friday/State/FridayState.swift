@@ -162,6 +162,8 @@ final class FridayState: ObservableObject {
     @Published var activityFeed: [ActivityItem] = []
     @Published var activeTasks: [ActiveTask] = []
     @Published var longTermMemoryContext: String = ""
+    /// Set when checkSessionHealth() triggers — drives the yellow caution badge in the UI.
+    @Published var isContextWarning: Bool = false
 
     // MARK: - Friday session lifecycle
 
