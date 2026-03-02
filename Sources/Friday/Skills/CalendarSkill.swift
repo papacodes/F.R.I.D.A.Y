@@ -1,65 +1,107 @@
+import EventKit
 import Foundation
 
 struct CalendarSkill {
-    static func addEvent(title: String, startTime: String, endTime: String?) -> String {
-        let endPart = endTime != nil ? ", end date:date \"\(endTime!)\"" : ""
-        let script = "tell application \"Calendar\"\n" +
-                     "try\n" +
-                     "  -- Try named calendars first; fall back to first writable calendar\n" +
-                     "  set targetCal to missing value\n" +
-                     "  repeat with c in calendars\n" +
-                     "    if (name of c is \"Calendar\" or name of c is \"Work\") then\n" +
-                     "      set targetCal to c\n" +
-                     "      exit repeat\n" +
-                     "    end if\n" +
-                     "  end repeat\n" +
-                     "  if targetCal is missing value then\n" +
-                     "    repeat with c in calendars\n" +
-                     "      if writable of c is true then\n" +
-                     "        set targetCal to c\n" +
-                     "        exit repeat\n" +
-                     "      end if\n" +
-                     "    end repeat\n" +
-                     "  end if\n" +
-                     "  if targetCal is missing value then return \"Error: no writable calendar found.\"\n" +
-                     "  tell targetCal\n" +
-                     "    make new event with properties {summary:\"\(title)\", start date:date \"\(startTime)\"\(endPart)}\n" +
-                     "  end tell\n" +
-                     "  return \"Successfully added \(title) to \" & name of targetCal\n" +
-                     "on error err\n" +
-                     "  return \"Error adding event: \" & err\n" +
-                     "end try\n" +
-                     "end tell"
-        return MusicSkill.executeAppleScript(script)
+
+    // MARK: - Access
+
+    private static func authorized() async -> Bool {
+        let status = EKEventStore.authorizationStatus(for: .event)
+        if #available(macOS 14.0, *) {
+            if status == .fullAccess { return true }
+        } else {
+            if status == .authorized { return true }
+        }
+
+        let store = EKEventStore()
+        if #available(macOS 14.0, *) {
+            return (try? await store.requestFullAccessToEvents()) ?? false
+        } else {
+            return await withCheckedContinuation { cont in
+                store.requestAccess(to: .event) { granted, _ in
+                    cont.resume(returning: granted)
+                }
+            }
+        }
     }
 
-    static func getSchedule(forDate dateString: String? = nil) -> String {
-        let targetDateScript = (dateString != nil && !dateString!.isEmpty) ? "date \"\(dateString!)\"" : "current date"
-        
-        let script = "tell application \"Calendar\"\n" +
-                     "try\n" +
-                     "  set targetDate to \(targetDateScript)\n" +
-                     "on error\n" +
-                     "  set targetDate to current date\n" +
-                     "end try\n" +
-                     "set time of targetDate to 0\n" +
-                     "set endOfPeriod to targetDate + (24 * 60 * 60)\n" +
-                     "set output to \"\"\n" +
-                     "repeat with i from 1 to count of calendars\n" +
-                     "  set aCal to calendar i\n" +
-                     "  set calName to name of aCal\n" +
-                     "  if calName is not \"Birthdays\" and calName is not \"Siri Suggestions\" then\n" +
-                     "    try\n" +
-                     "      set dailyEvents to (every event of aCal whose ((start date is greater than or equal to targetDate and start date is less than endOfPeriod) or (start date is less than targetDate and end date is greater than targetDate)))\n" +
-                     "      repeat with anEvent in dailyEvents\n" +
-                     "        set output to output & \"(\" & calName & \") \" & summary of anEvent & \" at \" & (time string of (get start date of anEvent)) & \"\\n\"\n" +
-                     "      end repeat\n" +
-                     "    end try\n" +
-                     "  end if\n" +
-                     "end repeat\n" +
-                     "if output is \"\" then return \"I checked your calendars but found no events for this period.\"\n" +
-                     "return output\n" +
-                     "end tell"
-        return MusicSkill.executeAppleScript(script)
+    // MARK: - Get Schedule
+
+    static func getSchedule(forDate dateString: String? = nil) async -> String {
+        guard await authorized() else {
+            return "I don't have calendar access yet. Please allow it in System Settings → Privacy & Security → Calendars, then try again."
+        }
+
+        let targetDate: Date
+        if let ds = dateString, !ds.isEmpty {
+            targetDate = DateHelper.parseDate(ds) ?? Date()
+        } else {
+            targetDate = Date()
+        }
+
+        let store = EKEventStore()
+        let cal = Calendar.current
+        let startOfDay = cal.startOfDay(for: targetDate)
+        let endOfDay   = cal.date(byAdding: .day, value: 1, to: startOfDay)!
+
+        let pred   = store.predicateForEvents(withStart: startOfDay, end: endOfDay, calendars: nil)
+        let events = store.events(matching: pred).sorted { $0.startDate < $1.startDate }
+
+        let dayFmt = DateFormatter()
+        dayFmt.dateStyle = .full
+        dayFmt.timeStyle = .none
+
+        let timeFmt = DateFormatter()
+        timeFmt.timeStyle = .short
+        timeFmt.dateStyle = .none
+
+        if events.isEmpty {
+            return "No events on \(dayFmt.string(from: targetDate))."
+        }
+
+        let lines = events.map { e -> String in
+            let title = e.title ?? "Untitled"
+            let calName = e.calendar.title
+            if e.isAllDay { return "• [\(calName)] \(title) — all day" }
+            return "• [\(calName)] \(title) at \(timeFmt.string(from: e.startDate))"
+        }
+
+        return "Schedule for \(dayFmt.string(from: targetDate)):\n" + lines.joined(separator: "\n")
+    }
+
+    // MARK: - Add Event
+
+    static func addEvent(title: String, startTimeString: String, endTimeString: String?) async -> String {
+        guard await authorized() else {
+            return "I don't have calendar access. Please allow it in System Settings → Privacy & Security → Calendars."
+        }
+
+        guard let start = DateHelper.parseDate(startTimeString) else {
+            return "I couldn't understand the start time '\(startTimeString)'. Try something like 'today at 3pm' or 'tomorrow at 9am'."
+        }
+
+        let end: Date
+        if let es = endTimeString, let parsed = DateHelper.parseDate(es) {
+            end = parsed
+        } else {
+            end = start.addingTimeInterval(3600) // default 1 hour
+        }
+
+        let store = EKEventStore()
+        let event = EKEvent(eventStore: store)
+        event.title     = title
+        event.startDate = start
+        event.endDate   = end
+        event.calendar  = store.defaultCalendarForNewEvents
+
+        do {
+            try store.save(event, span: .thisEvent)
+            let fmt = DateFormatter()
+            fmt.dateStyle = .medium
+            fmt.timeStyle = .short
+            return "Added '\(title)' on \(fmt.string(from: start))."
+        } catch {
+            return "Couldn't save the event: \(error.localizedDescription)"
+        }
     }
 }

@@ -25,7 +25,7 @@ struct FridayStatusPanelView: View {
             .onTapGesture {
                 guard !state.isError else { return }
                 withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
-                    state.isFridayDetailOpen = true
+                    state.activeDetail = .activity
                 }
             }
 

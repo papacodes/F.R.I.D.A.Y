@@ -66,9 +66,12 @@ struct NotchExpandedView: View {
             // Layer 2: Main Hero Component
             ZStack {
                 if state.activeTab == .home {
-                    if state.isFridayDetailOpen {
+                    switch state.activeDetail {
+                    case .activity:
                         ExpandedViewActivity(namespace: animation)
-                    } else {
+                    case .weather:
+                        WeatherTabView()
+                    case .none:
                         FridayStatusPanelView(namespace: animation)
                     }
                 } else if state.activeTab == .music {
@@ -139,7 +142,7 @@ struct NotchExpandedView: View {
         }
         .frame(width: 660, height: 280)
         .animation(.spring(response: 0.5, dampingFraction: 0.85), value: state.activeTab)
-        .animation(.spring(response: 0.5, dampingFraction: 0.85), value: state.isFridayDetailOpen)
+        .animation(.spring(response: 0.5, dampingFraction: 0.85), value: state.activeDetail)
         .animation(.easeInOut(duration: 0.4), value: state.isContextWarning)
     }
 }

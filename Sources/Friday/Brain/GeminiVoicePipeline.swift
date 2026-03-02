@@ -480,6 +480,11 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 let w = weather.current_weather
                 result = "Temperature: \(Int(w.temperature))°C, Wind: \(Int(w.windspeed)) km/h."
                 state.currentWeather = weather
+                state.update(\.activeTab, to: .home)
+                state.update(\.activeDetail, to: .weather)
+                if state.displayState != .open {
+                    NotificationCenter.default.post(name: .fridayExpand, object: nil)
+                }
             } else {
                 result = "Unable to fetch weather data."
             }
@@ -532,12 +537,13 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         case "manage_calendar":
             if let action = call.args["action"] {
                 if action == "add", let title = call.args["title"], let start = call.args["start_time"] {
-                    let s = DateHelper.parseAndFormat(start)
-                    let e = call.args["end_time"].map { DateHelper.parseAndFormat($0) }
-                    result = CalendarSkill.addEvent(title: title, startTime: s, endTime: e)
+                    result = await CalendarSkill.addEvent(
+                        title: title,
+                        startTimeString: start,
+                        endTimeString: call.args["end_time"]
+                    )
                 } else if action == "get_schedule" {
-                    let d = call.args["date"].map { DateHelper.parseAndFormat($0) }
-                    result = CalendarSkill.getSchedule(forDate: d)
+                    result = await CalendarSkill.getSchedule(forDate: call.args["date"])
                 }
             }
         case "execute_dev_task":
@@ -1072,15 +1078,15 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
     private static let calendarTool = FunctionDecl(
         name: "manage_calendar",
-        description: "Create or view calendar events.",
+        description: "Read or create events in the user's local Calendar. Use get_schedule to check what's on for a day. Use add to create a new event.",
         parameters: FunctionParams(
             type: "object",
             properties: [
-                "action": ParamProperty(type: "STRING", description: "add or get_schedule"),
-                "title": ParamProperty(type: "STRING", description: "Event title"),
-                "start_time": ParamProperty(type: "STRING", description: "Start time (natural language like 'today at 3pm')"),
-                "end_time": ParamProperty(type: "STRING", description: "End time (natural language like 'today at 4pm')"),
-                "date": ParamProperty(type: "STRING", description: "Target date for schedule (e.g. 'tomorrow', 'next Monday')")
+                "action":     ParamProperty(type: "STRING", description: "get_schedule or add"),
+                "date":       ParamProperty(type: "STRING", description: "For get_schedule: the day to check. Use plain English — 'today', 'tomorrow', 'next Monday', 'March 5'. Omit for today."),
+                "title":      ParamProperty(type: "STRING", description: "For add: event title"),
+                "start_time": ParamProperty(type: "STRING", description: "For add: start time in plain English, e.g. 'today at 3pm', 'tomorrow at 9am'"),
+                "end_time":   ParamProperty(type: "STRING", description: "For add: end time in plain English. Omit to default to 1 hour after start.")
             ],
             required: ["action"]
         )

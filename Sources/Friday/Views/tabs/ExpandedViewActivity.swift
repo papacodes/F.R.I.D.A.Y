@@ -5,24 +5,10 @@ struct ExpandedViewActivity: View {
     var namespace: Namespace.ID
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Header
-            HStack(alignment: .firstTextBaseline) {
-                Text("ACTIVITY")
-                    .font(.system(size: 10, weight: .black, design: .rounded))
-                    .foregroundColor(.white.opacity(0.3))
-                    .tracking(2.5)
-
-                Spacer()
-
-                if !state.activityHistory.isEmpty {
-                    Text("\(state.activityHistory.count) events")
-                        .font(.system(size: 9, weight: .semibold, design: .rounded))
-                        .foregroundColor(.white.opacity(0.18))
-                }
-            }
-            .padding(.bottom, 14)
-
+        ExpandedPanelView(
+            title: "ACTIVITY",
+            trailing: state.activityHistory.isEmpty ? nil : "\(state.activityHistory.count) events"
+        ) {
             if state.activityHistory.isEmpty {
                 VStack(spacing: 10) {
                     Image(systemName: "clock.arrow.circlepath")
@@ -43,10 +29,6 @@ struct ExpandedViewActivity: View {
                 }
             }
         }
-        .padding(.horizontal, 52)
-        .padding(.top, 68)
-        .padding(.bottom, 80)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

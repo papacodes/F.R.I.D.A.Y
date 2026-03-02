@@ -47,6 +47,15 @@ enum NotchTab: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Friday Detail Panel
+
+/// Which content panel is overlaid on the home tab's main area.
+/// .none shows the default Friday orb. .activity and beyond are
+/// triggered by Friday's responses — not manually navigable (except .activity).
+enum FridayDetail: Equatable {
+    case none, activity, weather
+}
+
 // MARK: - Alert System
 
 struct SystemAlert: Identifiable, Equatable {
@@ -153,7 +162,9 @@ class FridayState: ObservableObject {
     @Published var isHovering: Bool = false
     @Published var isUserInitiatedExpansion: Bool = false
     @Published var isFridaySessionActive: Bool = false
-    @Published var isFridayDetailOpen: Bool = false
+    @Published var activeDetail: FridayDetail = .none
+
+    var isFridayDetailOpen: Bool { activeDetail != .none }
 
     var standardWidth: CGFloat { 440 }
 

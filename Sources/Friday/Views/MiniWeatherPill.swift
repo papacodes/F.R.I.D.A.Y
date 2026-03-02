@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct MiniWeatherPill: View {
-    @EnvironmentObject var state: FridayState
+    @ObservedObject private var state = FridayState.shared
 
     var body: some View {
         Group {
