@@ -1,5 +1,16 @@
 import EventKit
 import Foundation
+import SwiftUI
+
+// Lightweight struct the UI uses — no EKEvent dependency outside this file.
+struct CalendarEventItem: Identifiable {
+    let id = UUID()
+    let title: String
+    let startDate: Date
+    let isAllDay: Bool
+    let calendarTitle: String
+    let calendarColor: Color
+}
 
 struct CalendarSkill {
 
@@ -67,6 +78,31 @@ struct CalendarSkill {
         }
 
         return "Schedule for \(dayFmt.string(from: targetDate)):\n" + lines.joined(separator: "\n")
+    }
+
+    // MARK: - Structured Events (for UI)
+
+    /// Returns today's events as structured items ready for the calendar tab view.
+    static func todayEvents(for date: Date = Date()) async -> [CalendarEventItem] {
+        guard await authorized() else { return [] }
+
+        let cal = Calendar.current
+        let start = cal.startOfDay(for: date)
+        let end   = cal.date(byAdding: .day, value: 1, to: start)!
+
+        let store = EKEventStore()
+        let pred  = store.predicateForEvents(withStart: start, end: end, calendars: nil)
+        return store.events(matching: pred)
+            .sorted { $0.startDate < $1.startDate }
+            .map { e in
+                CalendarEventItem(
+                    title:         e.title ?? "Untitled",
+                    startDate:     e.startDate,
+                    isAllDay:      e.isAllDay,
+                    calendarTitle: e.calendar.title,
+                    calendarColor: Color(cgColor: e.calendar.cgColor)
+                )
+            }
     }
 
     // MARK: - Add Event

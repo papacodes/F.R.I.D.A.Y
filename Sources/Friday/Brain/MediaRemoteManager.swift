@@ -105,7 +105,7 @@ final class MediaRemoteManager {
                 tell application "Music"
                     if (count of artworks of current track) > 0 then
                         set artData to raw data of artwork 1 of current track
-                        set artFile to open for access POSIX file "(tempPath)" with write permission
+                        set artFile to open for access POSIX file "\(tempPath)" with write permission
                         set eof artFile to 0
                         write artData to artFile
                         close access artFile
@@ -130,6 +130,7 @@ final class MediaRemoteManager {
                 if let image = NSImage(contentsOfFile: tempPath) {
                     await MainActor.run {
                         FridayState.shared.albumArt = image
+                        FridayState.shared.albumAccentColor = image.averageColor()
                     }
                 }
             }
@@ -142,6 +143,7 @@ final class MediaRemoteManager {
             if let (data, _) = try? await URLSession.shared.data(from: url),
                let image = NSImage(data: data) {
                 FridayState.shared.albumArt = image
+                FridayState.shared.albumAccentColor = image.averageColor()
             }
         }
     }
@@ -180,7 +182,10 @@ final class MediaRemoteManager {
         if let artData = info[kArtwork] as? Data {
             if artData != lastArtworkData {
                 lastArtworkData = artData
-                s.albumArt = NSImage(data: artData)
+                if let image = NSImage(data: artData) {
+                    s.albumArt = image
+                    s.albumAccentColor = image.averageColor()
+                }
             }
         } else if hasTrack {
             if bundle.contains("spotify") {

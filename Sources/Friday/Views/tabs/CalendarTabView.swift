@@ -1,45 +1,57 @@
 import SwiftUI
 
 struct CalendarTabView: View {
-    @ObservedObject private var state = FridayState.shared
     var namespace: Namespace.ID
 
+    @State private var events: [CalendarEventItem] = []
+    @State private var isLoading = true
+
     var body: some View {
-        VStack(spacing: 0) {
-            // Calendar Stage
-            HStack(spacing: 24) {
-                // Large Date View
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(Date(), format: .dateTime.weekday(.wide))
-                        .font(.system(size: 12, weight: .black, design: .rounded))
-                        .foregroundColor(.cyan)
-                        .textCase(.uppercase)
-                    
-                    Text(Date(), format: .dateTime.day())
-                        .font(.system(size: 40, weight: .light, design: .rounded))
-                        .foregroundColor(.white)
-                        .padding(.top, -6)
-                }
-                .frame(width: 100, alignment: .leading)
-                .matchedGeometryEffect(id: "cal_info", in: namespace)
-                
-                // Vertical Events List
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        eventRow(title: "Friday Review", time: "10:00 AM", color: .cyan)
-                        eventRow(title: "Design Sync", time: "02:30 PM", color: .purple)
-                        eventRow(title: "System Check", time: "05:00 PM", color: .white.opacity(0.15))
-                    }
-                    .padding(.vertical, 4)
-                }
-                .frame(height: 80)
-                .mask(
-                    LinearGradient(
-                        colors: [.clear, .black, .black, .clear],
-                        startPoint: .top, endPoint: .bottom
-                    )
-                )
+        HStack(spacing: 24) {
+            // Large date badge
+            VStack(alignment: .leading, spacing: 0) {
+                Text(Date(), format: .dateTime.weekday(.wide))
+                    .font(.system(size: 12, weight: .black, design: .rounded))
+                    .foregroundColor(.cyan)
+                    .textCase(.uppercase)
+
+                Text(Date(), format: .dateTime.day())
+                    .font(.system(size: 40, weight: .light, design: .rounded))
+                    .foregroundColor(.white)
+                    .padding(.top, -6)
             }
+            .frame(width: 100, alignment: .leading)
+            .matchedGeometryEffect(id: "cal_info", in: namespace)
+
+            // Events list
+            Group {
+                if isLoading {
+                    ProgressView()
+                        .scaleEffect(0.6)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if events.isEmpty {
+                    Text("No events today")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundColor(.white.opacity(0.25))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                } else {
+                    ScrollView(.vertical, showsIndicators: false) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(events) { event in
+                                eventRow(event)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .mask(
+                        LinearGradient(
+                            colors: [.clear, .black, .black, .clear],
+                            startPoint: .top, endPoint: .bottom
+                        )
+                    )
+                }
+            }
+            .frame(height: 80)
         }
         .frame(height: 140)
         .background(
@@ -48,19 +60,25 @@ struct CalendarTabView: View {
                 .matchedGeometryEffect(id: "cal_bg", in: namespace)
         )
         .padding(.horizontal, 40)
+        .task {
+            events = await CalendarSkill.todayEvents()
+            isLoading = false
+        }
     }
 
-    private func eventRow(title: String, time: String, color: Color) -> some View {
+    private func eventRow(_ event: CalendarEventItem) -> some View {
         HStack(spacing: 10) {
             Circle()
-                .fill(color)
+                .fill(event.calendarColor)
                 .frame(width: 4, height: 4)
-            
+
             VStack(alignment: .leading, spacing: 1) {
-                Text(title)
+                Text(event.title)
                     .font(.system(size: 11, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
-                Text(time)
+                    .lineLimit(1)
+
+                Text(event.isAllDay ? "All day" : event.startDate.formatted(date: .omitted, time: .shortened))
                     .font(.system(size: 9, weight: .medium, design: .rounded))
                     .foregroundColor(.white.opacity(0.35))
             }
