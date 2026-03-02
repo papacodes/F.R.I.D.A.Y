@@ -59,16 +59,30 @@ struct NotchAssistantMiniView: View {
     
     @ViewBuilder
     private var micIndicator: some View {
-        // Mic is on for the duration of the session. isListening (VAD) shows activity level.
-        let micOn = state.isFridaySessionActive
-        ZStack {
-            Circle()
-                .fill(state.isListening ? Color.yellow.opacity(0.15) : Color.white.opacity(0.06))
-                .frame(width: 24, height: 24)
+        if state.isError {
+            Button(action: { Task { await AppDelegate.pipeline.restart() } }) {
+                ZStack {
+                    Circle()
+                        .fill(Color.red.opacity(0.15))
+                        .frame(width: 24, height: 24)
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.red.opacity(0.8))
+                }
+            }
+            .buttonStyle(.plain)
+        } else {
+            // Mic is on for the duration of the session. isListening (VAD) shows activity level.
+            let micOn = state.isFridaySessionActive
+            ZStack {
+                Circle()
+                    .fill(state.isListening ? Color.yellow.opacity(0.15) : Color.white.opacity(0.06))
+                    .frame(width: 24, height: 24)
 
-            Image(systemName: micOn ? "mic.fill" : "mic.slash.fill")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundColor(state.isListening ? .yellow : (micOn ? .white.opacity(0.5) : .red))
+                Image(systemName: micOn ? "mic.fill" : "mic.slash.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(state.isListening ? .yellow : (micOn ? .white.opacity(0.5) : .red))
+            }
         }
     }
     
@@ -106,13 +120,12 @@ struct NotchAssistantMiniView: View {
     }
     
     private var statusLabel: String {
-        if state.isError        { return "Error" }
-        if state.isThinking     { return "Thinking" }
-        // Coding takes priority over Speaking/Listening — dev task is the dominant state.
-        // If user engages mid-task and Gemini processes it, isThinking fires above and shows "Thinking".
+        if state.isError          { return "Error" }
         if state.isDevTaskRunning { return "Coding" }
-        if state.isSpeaking     { return "Speaking" }
-        if state.isListening    { return "Listening" }
+        // Show what the tool is doing instead of the generic "Thinking" label
+        if state.isThinking       { return state.currentToolLabel ?? "Thinking" }
+        if state.isSpeaking       { return "Speaking" }
+        if state.isListening      { return "Listening" }
         return "Waiting"
     }
 }

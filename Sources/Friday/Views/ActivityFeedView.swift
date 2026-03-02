@@ -5,20 +5,21 @@ struct ActivityFeedView: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 6) {
-            if state.activityFeed.isEmpty {
+            if state.activityHistory.isEmpty {
                 Text("NO RECENT ACTIVITY")
                     .font(.system(size: 9, weight: .semibold, design: .rounded))
                     .foregroundColor(.white.opacity(0.15))
                     .frame(maxWidth: .infinity, alignment: .trailing)
                     .padding(.top, 10)
             } else {
-                ForEach(state.activityFeed) { item in
+                // Show 4 most recent — oldest auto-drop as new ones arrive
+                ForEach(state.activityHistory.prefix(4)) { item in
                     ActivityCard(item: item)
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
         }
-        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: state.activityFeed)
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: state.activityHistory)
     }
 }
 

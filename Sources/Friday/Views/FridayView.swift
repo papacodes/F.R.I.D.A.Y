@@ -70,6 +70,9 @@ struct FridayView: View {
             )
             .contentShape(Rectangle())
             .onTapGesture {
+                // When fully open, the X button and tab pills handle all interactions.
+                // Only allow tap-to-toggle in collapsed states to prevent intercepting pill taps.
+                guard state.displayState != .open else { return }
                 NotificationCenter.default.post(name: .fridayToggle, object: nil)
             }
             .shadow(color: .black.opacity(state.displayState == .dismissed ? 0 : (state.displayState == .mini ? 0.3 : 0.5)), radius: 28, x: 0, y: 10)

@@ -21,6 +21,13 @@ struct FridayStatusPanelView: View {
             }
             .frame(height: 110)
             .padding(.top, 4)
+            .contentShape(Circle().size(CGSize(width: 100, height: 100)))
+            .onTapGesture {
+                guard !state.isError else { return }
+                withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
+                    state.isFridayDetailOpen = true
+                }
+            }
 
             // Status label
             Text(statusText.uppercased())
@@ -30,7 +37,25 @@ struct FridayStatusPanelView: View {
                 .matchedGeometryEffect(id: "orb_text", in: namespace)
                 .shadow(color: .black.opacity(0.5), radius: 2)
 
-            // Transcript - Limited height and line limit to stay in bounds
+            // Restart button — only visible in error state
+            if state.isError {
+                Button(action: { Task { await AppDelegate.pipeline.restart() } }) {
+                    Label("Restart", systemImage: "arrow.counterclockwise")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundColor(.red.opacity(0.8))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background(
+                            Capsule()
+                                .fill(Color.red.opacity(0.1))
+                                .overlay(Capsule().stroke(Color.red.opacity(0.2), lineWidth: 0.5))
+                        )
+                }
+                .buttonStyle(.plain)
+                .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            }
+
+            // Transcript
             if !state.transcript.isEmpty {
                 Text("\u{201C}\(state.transcript)\u{201D}")
                     .font(.system(size: 14, weight: .bold, design: .rounded))
@@ -41,9 +66,9 @@ struct FridayStatusPanelView: View {
                     .frame(height: 40)
                     .transition(.opacity.combined(with: .scale(scale: 0.95)))
             } else {
-                // Spacer to keep layout stable when transcript is empty
                 Spacer().frame(height: 40)
             }
+
         }
         .frame(maxWidth: .infinity)
         .background(

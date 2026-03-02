@@ -99,7 +99,7 @@ struct HorizontalNotchView: View {
 
     private func alertText(_ alert: SystemAlert) -> String {
         if alert.id == "friday"  { return "READY" }
-        if alert.id == "airpods" { return state.peripheralManager.airPodsState.name?.uppercased() ?? "AIRPODS" }
+        if alert.id == "airpods" { return "AIRPODS" }
         if alert.id == "battery" { return alert.isCharging ? "CHARGING" : "BATTERY" }
         return "\(alert.id.uppercased()) \(Int(alert.value * 100))%"
     }

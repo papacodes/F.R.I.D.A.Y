@@ -80,6 +80,15 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         await wrapUpSession()
     }
 
+    /// Full restart — clears error state, resets counters, reconnects fresh.
+    /// Called from the UI restart button when Friday is stuck in an error/disconnected state.
+    func restart() async {
+        state.update(\.isError, to: false)
+        reconnectAttempts = 0
+        stop()
+        await wake()
+    }
+
     func stop() {
         stateWatchdog?.cancel()
         stateWatchdog = nil
@@ -436,6 +445,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         // Cancel any pending clear — a new tool call is starting, keep isThinking true.
         thinkingClearTask?.cancel()
         state.update(\.isThinking, to: true)
+        state.update(\.currentToolLabel, to: toolLabel(name: call.name, args: call.args))
         var result = "Task complete."
         
         switch call.name {
@@ -466,7 +476,13 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             }
 
         case "get_weather":
-            result = await WeatherSkill.fetchWeather()
+            if let weather = await WeatherSkill.fetchWeather() {
+                let w = weather.current_weather
+                result = "Temperature: \(Int(w.temperature))°C, Wind: \(Int(w.windspeed)) km/h."
+                state.currentWeather = weather
+            } else {
+                result = "Unable to fetch weather data."
+            }
         case "get_time":
             result = "It is currently \(TimeSkill.getCurrentTime()) on \(TimeSkill.getCurrentDate())."
         case "get_battery_status":
@@ -654,6 +670,10 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         let response = ToolResponseMessage(toolResponse: ToolResponseBody(functionResponses: [
             FunctionResponseItem(id: call.id, name: call.name, response: ["output": result])
         ]))
+        // Post to activity feed for all non-trivial tool calls.
+        // execute_dev_task has its own chip UI; trivial/internal tools are skipped.
+        postToolActivity(name: call.name, args: call.args, result: result)
+
         await sendEncoded(response)
         turnCount += 1
         checkSessionHealth()
@@ -665,7 +685,54 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             try? await Task.sleep(nanoseconds: 400_000_000)
             guard !Task.isCancelled else { return }
             self?.state.update(\.isThinking, to: false)
+            self?.state.update(\.currentToolLabel, to: nil)
         }
+    }
+
+    /// Human-readable label for the mini status bar and activity feed.
+    /// Returns nil for trivial/internal tools that shouldn't surface to the user.
+    private func toolLabel(name: String, args: [String: String]) -> String? {
+        switch name {
+        case "get_weather":          return "Weather"
+        case "get_battery_status":   return "Battery"
+        case "retrieve_knowledge":
+            let q = args["query"] ?? ""
+            return "Knowledge" + (q.isEmpty ? "" : ": \(q.prefix(20))")
+        case "web_search":
+            let q = args["query"] ?? ""
+            return "Search" + (q.isEmpty ? "" : ": \(q.prefix(20))")
+        case "find_nearby_places":
+            let q = args["query"] ?? ""
+            return "Maps" + (q.isEmpty ? "" : ": \(q.prefix(20))")
+        case "read_file":
+            let p = args["path"] ?? ""
+            return "Reading \(URL(fileURLWithPath: p).lastPathComponent)"
+        case "write_file":
+            let p = args["path"] ?? ""
+            return "Writing \(URL(fileURLWithPath: p).lastPathComponent)"
+        case "list_directory":       return "Listing files"
+        case "run_shell":
+            let cmd = args["command"] ?? ""
+            return cmd.isEmpty ? "Shell" : String(cmd.prefix(30))
+        case "control_music", "play_playlist": return "Music"
+        case "manage_notes":         return "Notes"
+        case "manage_reminders":     return "Reminders"
+        case "manage_calendar":      return "Calendar"
+        // execute_dev_task has its own chip UI — no label needed here.
+        // Trivial/internal tools (get_time, get_ui_state, control_ui, etc.) return nil.
+        default:                     return nil
+        }
+    }
+
+    /// Posts a completed tool call to the activity feed.
+    /// Skips execute_dev_task (own chip UI) and internal/trivial tools.
+    private func postToolActivity(name: String, args: [String: String], result: String) {
+        guard let label = toolLabel(name: name, args: args) else { return }
+        let isError = result.hasPrefix("[TASK_ERROR]") || result.lowercased().hasPrefix("error") || result.lowercased().hasPrefix("failed")
+        let subtitle = String(result.prefix(120)).trimmingCharacters(in: .whitespacesAndNewlines)
+        state.addActivity(type: isError ? .error : .done,
+                          title: label,
+                          subtitle: subtitle.isEmpty ? nil : subtitle)
     }
 
     /// Periodic watchdog that clears stuck isSpeaking after 4s of no audio chunks.

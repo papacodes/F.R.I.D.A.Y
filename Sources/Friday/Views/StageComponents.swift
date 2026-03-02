@@ -37,7 +37,11 @@ struct MiniOrbPill: View {
         .contentShape(Rectangle())
         .onTapGesture {
             withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
-                state.activeTab = .home
+                if state.activeTab == .home && state.isFridayDetailOpen {
+                    state.isFridayDetailOpen = false
+                } else {
+                    state.activeTab = .home
+                }
             }
         }
     }
