@@ -7,9 +7,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
     private let state: FridayState
     private let audioProcessor = AudioProcessor()
-    /// Per-project ClaudeProcess instances. Keyed by project path (or "default" for path-less tasks).
-    /// Each instance maintains its own session continuity, allowing concurrent tasks across projects.
-    private var claudeByProject: [String: ClaudeProcess] = [:]
+    private let agentRouter = CodingAgentRouter()
 
     private var wsTask: URLSessionWebSocketTask?
     private var urlSession: URLSession?
@@ -234,7 +232,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         let instructions = """
         You are Friday, Papa's macOS AI assistant in his MacBook notch. Be concise, natural, direct — no filler.
 
-        DEV: Use execute_dev_task for code work — always pass project_path, scope to one specific task. Use read_file/write_file for notes only. Use run_shell for grep/find one-liners. Never list or read entire project directories through file tools — use execute_dev_task with a specific question instead.
+        DEV: Use execute_dev_task for code work — always pass project_path, scope to one specific task. Use read_file/write_file for notes only. Use run_shell for grep/find one-liners. Never list or read entire project directories through file tools — use execute_dev_task with a specific question instead. Default agent is Claude Code. If rate-limited or Papa requests a different agent, pass agent="gemini" or agent="copilot".
         KNOWLEDGE: Use retrieve_knowledge instead of read_file whenever looking up past decisions, project context, session history, standards, or anything stored in notes. retrieve_knowledge is faster, token-efficient, and returns only the relevant excerpt.
         Before execute_dev_task, speak a brief line ("On it", "Let me check"). When it returns, summarise in 1-2 sentences.
 
@@ -554,33 +552,58 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             }
             let projectPath = call.args["project_path"]
             let projectKey = projectPath ?? "default"
-            let taskLabel = projectPath
+            let agentID = call.args["agent"].flatMap { CodingAgentID(rawValue: $0) }
+            let agent = agentRouter.resolve(agentID: agentID, projectKey: projectKey)
+
+            let projectName = projectPath
                 .map { URL(fileURLWithPath: $0.replacingOccurrences(of: "~", with: "")).lastPathComponent }
                 ?? "task"
-            let claude = claudeForProject(projectKey)
+            let agentSuffix: String
+            switch agentID ?? .claude {
+            case .claude:  agentSuffix = ""
+            case .gemini:  agentSuffix = " [gemini cli]"
+            case .copilot: agentSuffix = " [copilot]"
+            }
+            let taskLabel = projectName + agentSuffix
+
+            // isBusy guard — checked BEFORE startTask to avoid corrupting chip state.
+            // When busy, the original task continues cleanly; chip state is untouched.
+            if agent.isBusy {
+                result = "\(agent.agentName) is already running a task for \(taskLabel). Please wait."
+                break
+            }
 
             state.startTask(id: projectKey, label: taskLabel)
-            state.addActivity(type: .info, title: "Claude Code", subtitle: task)
+            state.addActivity(type: .info, title: agent.agentName, subtitle: task)
 
             let maxTurns = call.args["max_turns"].flatMap { Int($0) } ?? 15
             do {
-                result = try await claude.ask(task, directory: projectPath, maxTurns: maxTurns) { progress in
+                result = try await agent.ask(task, directory: projectPath, maxTurns: maxTurns) { progress in
                     Task { @MainActor in
                         FridayState.shared.updateTask(id: projectKey, step: progress)
                     }
                 }
-                // [TASK_DONE] is the source of truth — Claude appends it only when fully complete.
-                // If absent, the process exited without confirming (turn limit hit, silent fail, etc.).
-                if result.contains("[TASK_DONE]") {
-                    result = result.replacingOccurrences(of: "[TASK_DONE]", with: "")
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    state.completeTask(id: projectKey)
+                if agent is ClaudeProcess {
+                    // Claude Code signals completion with [TASK_DONE].
+                    // If absent, the process exited without confirming (turn limit hit, silent fail, etc.).
+                    if result.contains("[TASK_DONE]") {
+                        result = result.replacingOccurrences(of: "[TASK_DONE]", with: "")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        state.completeTask(id: projectKey)
+                    } else {
+                        state.errorTask(id: projectKey, message: "Ended without confirmation — may be incomplete")
+                    }
                 } else {
-                    state.errorTask(id: projectKey, message: "Ended without confirmation — may be incomplete")
+                    // Other agents signal completion by process exit code.
+                    if result.hasPrefix("[TASK_ERROR]") {
+                        state.errorTask(id: projectKey, message: "Task failed")
+                    } else {
+                        state.completeTask(id: projectKey)
+                    }
                 }
                 state.update(\.transcript, to: "")
                 // Truncate before sending back — long results burn context fast and cause disconnects.
-                // Keep head (context) + tail (spoken summary the preamble asks Claude to put last).
+                // Keep head (context) + tail (spoken summary the preamble asks the agent to put last).
                 let limit = 1500
                 if result.count > limit {
                     let head = String(result.prefix(400))
@@ -589,7 +612,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 }
             } catch {
                 state.errorTask(id: projectKey, message: error.localizedDescription)
-                result = "Claude Code failed: \(error.localizedDescription)"
+                result = "\(agent.agentName) failed: \(error.localizedDescription)"
             }
 
         case "control_ui":
@@ -870,10 +893,6 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         state.update(\.isContextWarning, to: false)
         isAudioSetup = false   // reset so setupOutputAudio() re-runs on reconnect
 
-        // Drop all ClaudeProcess sessions — fresh Gemini context should pair with fresh Claude context.
-        // New instances are created on demand when the next execute_dev_task arrives.
-        claudeByProject.removeAll()
-
         state.update(\.isConnected, to: false)
         state.update(\.isSpeaking, to: false)
         state.update(\.isThinking, to: false)
@@ -888,15 +907,6 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
         intentionalStop = false
         await connect()
-    }
-
-    /// Returns the ClaudeProcess bound to a project key, creating one on first use.
-    /// Isolation: called on @MainActor — dictionary access is safe.
-    private func claudeForProject(_ key: String) -> ClaudeProcess {
-        if let existing = claudeByProject[key] { return existing }
-        let instance = ClaudeProcess()
-        claudeByProject[key] = instance
-        return instance
     }
 
     private func sendEncoded<T: Encodable>(_ value: T) async {
@@ -1094,13 +1104,14 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
     private static let executeDevTaskTool = FunctionDecl(
         name: "execute_dev_task",
-        description: "Execute a development task using Claude Code. Use for code analysis, making changes, debugging, or any task requiring understanding of a code project. Always pass project_path. Keep the task tightly scoped — one specific question or change, not 'look at everything'. Pass max_turns=5 for read-only questions, 15 for changes.",
+        description: "Execute a development task using a coding agent (Claude Code by default, or Gemini CLI / GitHub Copilot as alternatives). Use for code analysis, making changes, debugging, or any task requiring understanding of a code project. Always pass project_path. Keep the task tightly scoped — one specific question or change, not 'look at everything'. Pass max_turns=5 for read-only questions, 15 for changes.",
         parameters: FunctionParams(
             type: "object",
             properties: [
-                "task":         ParamProperty(type: "STRING", description: "The specific task or question for Claude Code. Be precise and scoped."),
+                "task":         ParamProperty(type: "STRING", description: "The specific task or question for the coding agent. Be precise and scoped."),
                 "project_path": ParamProperty(type: "STRING", description: "Absolute path to the project (e.g. ~/projects/friday, ~/projects/oats). Required for code projects."),
-                "max_turns":    ParamProperty(type: "STRING", description: "Turn budget for Claude Code. Pass \"5\" for lookups/reads, \"15\" for edits. Default 15.")
+                "max_turns":    ParamProperty(type: "STRING", description: "Turn budget for Claude Code. Pass \"5\" for lookups/reads, \"15\" for edits. Default 15."),
+                "agent":        ParamProperty(type: "STRING", description: "Which coding agent: \"claude\" (default), \"gemini\", or \"copilot\". Omit for Claude. Use \"gemini\" or \"copilot\" when rate-limited or when Papa requests a different agent.")
             ],
             required: ["task"]
         )

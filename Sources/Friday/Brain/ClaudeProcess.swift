@@ -7,10 +7,12 @@ import Foundation
 // NOT @MainActor — background callbacks (readabilityHandler, terminationHandler)
 // run on dispatch queues and must not inherit actor isolation. The GeminiVoicePipeline's
 // @MainActor context serializes all calls to this class in practice.
-final class ClaudeProcess: @unchecked Sendable {
+final class ClaudeProcess: @unchecked Sendable, CodingAgentProcess {
+
+    let agentName = "Claude Code"
 
     private var hasSession = false
-    private var isBusy = false
+    private(set) var isBusy = false
     private var taskCount = 0
     /// After this many tasks, silently drop --continue and start a fresh Claude session.
     /// Prevents unbounded context growth from accumulated tool calls across many dev tasks.
