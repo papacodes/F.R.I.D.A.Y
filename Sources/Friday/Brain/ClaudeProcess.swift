@@ -52,7 +52,6 @@ final class ClaudeProcess: @unchecked Sendable, CodingAgentProcess {
         defer { isBusy = false }
         var args: [String] = [
             "--print",
-            "--verbose",
             "--model", "claude-sonnet-4-6",
             "--output-format", "stream-json",
             "--max-turns", "\(maxTurns)"
@@ -129,7 +128,7 @@ final class ClaudeProcess: @unchecked Sendable, CodingAgentProcess {
             nonisolated(unsafe) var done = false
 
             // Rolling timeout: terminate if no stdout for 180s (generous for large tasks).
-            // This alone isn't enough — --verbose mode outputs rate-limit retry messages every few
+            // This alone isn't enough —  mode outputs rate-limit retry messages every few
             // seconds, which resets lastOutputTime and keeps the process alive indefinitely.
             let timeoutTimer = DispatchSource.makeTimerSource(queue: .global())
             timeoutTimer.schedule(deadline: .now() + 30, repeating: 30)
@@ -142,7 +141,7 @@ final class ClaudeProcess: @unchecked Sendable, CodingAgentProcess {
             timeoutTimer.resume()
 
             // Hard wall-clock cap: kill after 300s regardless of output volume.
-            // Prevents --verbose rate-limit retries from hanging tasks indefinitely.
+            // Prevents  rate-limit retries from hanging tasks indefinitely.
             let hardDeadline = DispatchSource.makeTimerSource(queue: .global())
             hardDeadline.schedule(deadline: .now() + 300)
             hardDeadline.setEventHandler {

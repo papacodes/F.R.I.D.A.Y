@@ -77,7 +77,7 @@ struct HorizontalNotchView: View {
     @ViewBuilder
     private func alertLeftWidget(_ alert: SystemAlert) -> some View {
         if alert.id == "friday" {
-            MiniOrbView(isActive: state.isActive, isError: state.isError, isDevTask: state.isDevTaskRunning, isConnected: state.isConnected).scaleEffect(1.1)
+            MiniOrbView(volume: state.volume, isActive: state.isActive, isError: state.isError, isDevTask: state.isDevTaskRunning, isConnected: state.isConnected).scaleEffect(1.1)
         } else {
             Image(systemName: alert.icon).font(.system(size: 14, weight: .bold)).foregroundColor(alert.color)
         }
@@ -113,7 +113,7 @@ struct HorizontalNotchView: View {
 
     private var idleView: some View {
         NotchMiniView(
-            left: MiniOrbView(isActive: state.isActive, isError: state.isError, isDevTask: state.isDevTaskRunning, isConnected: state.isConnected).padding(.leading, -4.0),
+            left: MiniOrbView(volume: state.volume, isActive: state.isActive, isError: state.isError, isDevTask: state.isDevTaskRunning, isConnected: state.isConnected).padding(.leading, -4.0),
             right: BatteryIndicator()
         )
     }
@@ -139,6 +139,7 @@ struct CompactBatteryRing: View {
 
 // MARK: - Mini Orb
 struct MiniOrbView: View {
+    let volume: Float
     let isActive: Bool
     let isError: Bool
     let isDevTask: Bool
@@ -160,7 +161,7 @@ struct MiniOrbView: View {
             }
             .frame(width: 18, height: 18).offset(y: 2).blendMode(.screen)
         }
-        .scaleEffect(isActive ? 1.25 : 1.0)
+        .scaleEffect(isActive ? (1.25 + CGFloat(volume) * 0.4) : 1.0)
         .onAppear { withAnimation(.linear(duration: 4).repeatForever(autoreverses: false)) { rotation = 360 } }
     }
     

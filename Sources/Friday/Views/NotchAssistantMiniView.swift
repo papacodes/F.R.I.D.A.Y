@@ -20,6 +20,7 @@ struct NotchAssistantMiniView: View {
                 // LEFT GROUP: Orb + Mini Waveform
                 HStack(spacing: 8) {
                     MiniOrbView(
+                        volume: state.volume,
                         isActive: state.isActive,
                         isError: state.isError,
                         isDevTask: state.isDevTaskRunning,

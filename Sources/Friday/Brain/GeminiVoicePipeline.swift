@@ -38,7 +38,10 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     // We warn at 10 min or 20 turns and offer a graceful refresh.
     private var sessionStartTime: Date?
     private var turnCount = 0
+    private var sessionToolCallCount = 0
+    private var sessionDevTaskCount = 0
     private var hasWarnedAboutContext = false
+    private var lastDevTaskResults: [String: String] = [:]
     private let sessionWarnMinutes: TimeInterval = 10 * 60
     private let sessionWarnTurns = 15
 
@@ -65,7 +68,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         audioProcessor.isMuted = false
         state.recordActivity()
         
-        try? await Task.sleep(nanoseconds: 400_000_000)
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
         
         if !state.isListening && !state.isSpeaking && !state.isThinking {
             await sendGreeting()
@@ -311,11 +314,13 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 turnCount = 0
                 hasWarnedAboutContext = false
                 state.update(\.isContextWarning, to: false)
+        agentRouter.resetAll()
                 audioProcessor.start(ws: wsTask) { [weak self] active, rms in
                     DispatchQueue.main.async {
                         self?.state.update(\.isListening, to: active)
-                        if active { self?.state.update(\.volume, to: rms) }
-                        else if self?.state.isSpeaking == false { self?.state.update(\.volume, to: 0.0) }
+                        if self?.state.isSpeaking == false {
+                            self?.state.update(\.volume, to: rms)
+                        }
                     }
                 }
                 if pendingRefreshGreeting {
@@ -329,13 +334,14 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             if let content = msg.serverContent {
                 if content.turnComplete == true {
                     turnCount += 1
-                    state.update(\.volume, to: 0.0)
-                    // Delay isSpeaking clear — playerNode still has buffered audio queued when
-                    // turnComplete arrives. Clearing immediately causes the orb to snap back to
-                    // idle while audio is still audibly playing. 1.2s covers typical buffer drain.
+                    // Delay both isSpeaking and volume clear — playerNode still has buffered audio
+                    // queued when turnComplete arrives. Zeroing volume immediately causes the orb
+                    // animation to snap off while audio is still audibly draining. Keep volume live
+                    // until isSpeaking transitions to false so the animation fades naturally.
                     Task { @MainActor [weak self] in
                         try? await Task.sleep(nanoseconds: 1_200_000_000)
                         self?.state.update(\.isSpeaking, to: false)
+                        self?.state.update(\.volume, to: 0.0)
                     }
                     checkSessionHealth()
                     // Delay mic unmute — playerNode still has buffered audio queued after turnComplete arrives.
@@ -568,6 +574,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
             // isBusy guard — checked BEFORE startTask to avoid corrupting chip state.
             // When busy, the original task continues cleanly; chip state is untouched.
+            sessionDevTaskCount += 1
             if agent.isBusy {
                 result = "\(agent.agentName) is already running a task for \(taskLabel). Please wait."
                 break
@@ -705,13 +712,14 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
         await sendEncoded(response)
         turnCount += 1
+        sessionToolCallCount += 1
         checkSessionHealth()
 
         // Debounced clear — wait 400ms before dropping isThinking.
         // If another tool call starts within that window, it cancels this task and
         // isThinking never drops, preventing the orb from flashing idle between calls.
         thinkingClearTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 400_000_000)
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard !Task.isCancelled else { return }
             self?.state.update(\.isThinking, to: false)
             self?.state.update(\.currentToolLabel, to: nil)
@@ -834,7 +842,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
 
     private func wrapUpSession() async {
         // Skip if session had no meaningful activity — avoids burning a turn on empty open/close cycles.
-        guard turnCount > 2 else { return }
+        guard sessionToolCallCount > 0 else { return }
         let msg = ClientContentMessage(clientContent: ClientContent(turns: [
             ContentTurn(role: "user", parts: [TextPart(text: "System: User dismissed notch. Use manage_notes tool to summarize today's progress in the current project note.")])
         ], turnComplete: true))
@@ -854,7 +862,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         let mins = Int(elapsed / 60)
         // Passive warning only — do NOT suggest or offer a reconnect. Papa decides when to reconnect.
         // Gemini should NOT call refresh_session proactively; only when Papa explicitly asks.
-        let prompt = "System: \(mins)min / \(turnCount) turns in — context window is getting full. Mention this briefly to Papa in one sentence. Do not offer to reconnect or suggest refresh_session."
+        let prompt = "System: Nearing context limit (\(turnCount) turns, \(mins)m). Warn Papa briefly and offer refresh."
         Task { await sendSystemMessage(prompt) }
     }
 
@@ -889,8 +897,12 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         // Reset session metrics so health check starts fresh
         sessionStartTime = nil
         turnCount = 0
+        sessionToolCallCount = 0
+        sessionDevTaskCount = 0
+        lastDevTaskResults.removeAll()
         hasWarnedAboutContext = false
         state.update(\.isContextWarning, to: false)
+        agentRouter.resetAll()
         isAudioSetup = false   // reset so setupOutputAudio() re-runs on reconnect
 
         state.update(\.isConnected, to: false)
@@ -1158,4 +1170,21 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
             required: ["action"]
         )
     )
+
+    private func calculateSimilarity(_ new: String, _ old: String?) -> Double {
+        guard let old = old, !old.isEmpty, !new.isEmpty else { return 0.0 }
+        if new == old { return 1.0 }
+        
+        let newWords = new.lowercased().split(separator: " ").map(String.init)
+        let oldWords = old.lowercased().split(separator: " ").map(String.init)
+        
+        let newSet = Set(newWords)
+        let oldSet = Set(oldWords)
+        
+        let common = newSet.intersection(oldSet)
+        let total = max(newSet.count, oldSet.count)
+        
+        return Double(common.count) / Double(total)
+    }
+
 }
