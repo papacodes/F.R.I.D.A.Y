@@ -128,7 +128,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         }()
         let notePath = "~/Documents/notes/projects/friday/sessions/\(dateStr).md"
         let msg = ClientContentMessage(clientContent: ClientContent(turns: [
-            ContentTurn(role: "user", parts: [TextPart(text: "System: Session ending. Write a brief note to \(notePath) — what was worked on today, what carries forward. Then say a quick goodbye.")])
+            ContentTurn(role: "user", parts: [Part(text: "System: Session ending. Write a brief note to \(notePath) — what was worked on today, what carries forward. Then say a quick goodbye.")])
         ], turnComplete: true))
         Task { await self.sendEncoded(msg) }
         // Fallback: force dismiss if Gemini doesn't complete
@@ -256,7 +256,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                     inputAudioTranscription: nil,
                     outputAudioTranscription: nil
                 ),
-                systemInstruction: SystemInstruction(parts: [TextPart(text: instructions)]),
+                systemInstruction: SystemInstruction(parts: [Part(text: instructions)]),
                 tools: [ToolsList(functionDeclarations: [
                     Self.ragTool, Self.executeDevTaskTool,
                     Self.readFileTool, Self.writeFileTool, Self.listDirectoryTool, Self.runShellTool,
@@ -264,7 +264,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                     Self.mapTool, Self.searchTool, Self.musicTool,
                     Self.playlistTool, Self.notesTool, Self.remindersTool,
                     Self.calendarTool, Self.disconnectTool, Self.refreshSessionTool,
-                    Self.getUiStateTool, Self.controlUiTool
+                    Self.getUiStateTool, Self.controlUiTool, Self.captureScreenTool
                 ])]
             )
         )
@@ -622,6 +622,25 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 result = "\(agent.agentName) failed: \(error.localizedDescription)"
             }
 
+        case "capture_screen":
+            if let prompt = call.args["prompt"] {
+                let captureResult = await ScreenCaptureSkill.captureAndAnalyze(prompt: prompt)
+                if captureResult.hasPrefix("[SCREENSHOT_CAPTURED]") {
+                    let base64 = captureResult.replacingOccurrences(of: "[SCREENSHOT_CAPTURED]", with: "")
+                    result = "Screenshot captured. Looking at it now."
+                    // Send the image inline to Gemini
+                    let msg = ClientContentMessage(clientContent: ClientContent(turns: [
+                        ContentTurn(role: "user", parts: [
+                            Part(inlineData: InlineDataPart(mimeType: "image/png", data: base64)),
+                            Part(text: prompt)
+                        ])
+                    ], turnComplete: true))
+                    Task { await sendEncoded(msg) }
+                } else {
+                    result = captureResult
+                }
+            }
+
         case "control_ui":
             if let action = call.args["action"] {
                 switch action {
@@ -755,6 +774,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         case "manage_notes":         return "Notes"
         case "manage_reminders":     return "Reminders"
         case "manage_calendar":      return "Calendar"
+        case "capture_screen":       return "Looking at screen"
         // execute_dev_task has its own chip UI — no label needed here.
         // Trivial/internal tools (get_time, get_ui_state, control_ui, etc.) return nil.
         default:                     return nil
@@ -807,7 +827,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     private func sendReconnectNotice() async {
         // Fresh session after a drop — session context was lost, keep it honest and brief
         let msg = ClientContentMessage(clientContent: ClientContent(turns: [
-            ContentTurn(role: "user", parts: [TextPart(text: "System: Connection was interrupted and just restored. Tell Papa you're back — one sentence, no apology.")])
+            ContentTurn(role: "user", parts: [Part(text: "System: Connection was interrupted and just restored. Tell Papa you're back — one sentence, no apology.")])
         ], turnComplete: true))
         await sendEncoded(msg)
     }
@@ -815,7 +835,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     private func sendRefreshGreeting() async {
         // Session was intentionally refreshed (context limit) — acknowledge cleanly and resume
         let msg = ClientContentMessage(clientContent: ClientContent(turns: [
-            ContentTurn(role: "user", parts: [TextPart(text: "System: Session was refreshed for a clean context. Tell Papa you're back and ready — one sentence.")])
+            ContentTurn(role: "user", parts: [Part(text: "System: Session was refreshed for a clean context. Tell Papa you're back and ready — one sentence.")])
         ], turnComplete: true))
         await sendEncoded(msg)
     }
@@ -835,7 +855,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         }
 
         let msg = ClientContentMessage(clientContent: ClientContent(turns: [
-            ContentTurn(role: "user", parts: [TextPart(text: prompt)])
+            ContentTurn(role: "user", parts: [Part(text: prompt)])
         ], turnComplete: true))
         await sendEncoded(msg)
     }
@@ -844,7 +864,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
         // Skip if session had no meaningful activity — avoids burning a turn on empty open/close cycles.
         guard sessionToolCallCount > 0 else { return }
         let msg = ClientContentMessage(clientContent: ClientContent(turns: [
-            ContentTurn(role: "user", parts: [TextPart(text: "System: User dismissed notch. Use manage_notes tool to summarize today's progress in the current project note.")])
+            ContentTurn(role: "user", parts: [Part(text: "System: User dismissed notch. Use manage_notes tool to summarize today's progress in the current project note.")])
         ], turnComplete: true))
         await sendEncoded(msg)
     }
@@ -869,7 +889,7 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
     /// Injects a system-only message into the conversation without user attribution.
     private func sendSystemMessage(_ text: String) async {
         let msg = ClientContentMessage(clientContent: ClientContent(turns: [
-            ContentTurn(role: "user", parts: [TextPart(text: text)])
+            ContentTurn(role: "user", parts: [Part(text: text)])
         ], turnComplete: true))
         await sendEncoded(msg)
     }
@@ -1168,6 +1188,16 @@ final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
                 "task_id": ParamProperty(type: "STRING", description: "For dismiss_task: the project key (e.g. 'friday', 'oats'). Omit to dismiss all completed tasks.")
             ],
             required: ["action"]
+        )
+    )
+
+    private static let captureScreenTool = FunctionDecl(
+        name: "capture_screen",
+        description: "Capture a screenshot of Papa\'s screen so you can see what he\'s looking at. Only call this when he explicitly asks you to look at his screen or says he needs visual help. This is privacy-sensitive — never capture passively.",
+        parameters: FunctionParams(
+            type: "object",
+            properties: ["prompt": ParamProperty(type: "STRING", description: "What to look for or answer based on the screenshot")],
+            required: ["prompt"]
         )
     )
 

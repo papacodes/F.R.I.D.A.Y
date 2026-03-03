@@ -33,11 +33,35 @@ struct PrebuiltVoiceConfig: Encodable {
 }
 
 struct SystemInstruction: Encodable {
-    let parts: [TextPart]
+    let parts: [Part]
 }
 
-struct TextPart: Encodable {
-    let text: String
+struct Part: Encodable {
+    let text: String?
+    let inlineData: InlineDataPart?
+
+    init(text: String) {
+        self.text = text
+        self.inlineData = nil
+    }
+
+    init(inlineData: InlineDataPart) {
+        self.text = nil
+        self.inlineData = inlineData
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if let text = text { try container.encode(text, forKey: .text) }
+        if let inlineData = inlineData { try container.encode(inlineData, forKey: .inlineData) }
+    }
+
+    private enum CodingKeys: String, CodingKey { case text, inlineData }
+}
+
+struct InlineDataPart: Encodable {
+    let mimeType: String
+    let data: String
 }
 
 struct ToolsList: Encodable {
@@ -91,7 +115,7 @@ struct ClientContent: Encodable {
 
 struct ContentTurn: Encodable {
     let role: String
-    let parts: [TextPart]
+    let parts: [Part]
 }
 
 // MARK: - Client → Server: Tool result
