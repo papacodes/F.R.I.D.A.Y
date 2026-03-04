@@ -61,12 +61,12 @@ struct NotchAssistantMiniView: View {
     @ViewBuilder
     private var micIndicator: some View {
         if state.isError {
-            Button(action: { Task { await AppDelegate.pipeline.restart() } }) {
+            Button(action: { NotificationCenter.default.post(name: .fridayDismiss, object: nil) }) {
                 ZStack {
                     Circle()
                         .fill(Color.red.opacity(0.15))
                         .frame(width: 24, height: 24)
-                    Image(systemName: "arrow.counterclockwise")
+                    Image(systemName: "eject.fill")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundColor(.red.opacity(0.8))
                 }
