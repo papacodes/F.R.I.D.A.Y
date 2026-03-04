@@ -25,7 +25,7 @@ struct MiniWaveform: View {
             }
         }
         .onAppear { animating = isActive }
-        .onChange(of: isActive) { newValue in
+        .onChange(of: isActive) { _, newValue in
             // Use withAnimation to ensure the state change triggers the transition back to static bars
             withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                 animating = newValue

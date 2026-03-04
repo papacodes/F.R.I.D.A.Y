@@ -25,10 +25,10 @@ struct NotchIdleIndicator: View {
             }
         }
         .onAppear { tick = true }
-        .onChange(of: state.isActive) { _ in
+        .onChange(of: state.isActive) {
             // Re-trigger animation on state change
             tick = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { tick = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { tick = true }
         }
     }
 

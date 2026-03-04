@@ -35,7 +35,7 @@ struct TaskManagerPillView: View {
         .animation(.spring(response: 0.38, dampingFraction: 0.82), value: expandedTaskId)
         .animation(.spring(response: 0.38, dampingFraction: 0.82), value: state.activeTasks)
         // Clear expandedTaskId if task is dismissed
-        .onChange(of: state.activeTasks) { tasks in
+        .onChange(of: state.activeTasks) { _, tasks in
             if let id = expandedTaskId, !tasks.contains(where: { $0.id == id }) {
                 expandedTaskId = nil
             }
@@ -87,7 +87,7 @@ struct TaskManagerPillView: View {
             }
             .frame(maxHeight: 160)
             // Auto-scroll to latest entry
-            .onChange(of: activeTask.log.last?.id) { id in
+            .onChange(of: activeTask.log.last?.id) { _, id in
                 if let id { proxy.scrollTo(id, anchor: .bottom) }
             }
         }

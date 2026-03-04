@@ -2,9 +2,9 @@
 import Foundation
 
 final class AudioProcessor: @unchecked Sendable {
+    let engine = AVAudioEngine()
     private var pcmBuffer = Data()
     private let maxBufferSize = 3200 // 100ms at 16kHz (2 bytes per sample)
-    private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
     private var targetFormat: AVAudioFormat?
 
@@ -12,6 +12,7 @@ final class AudioProcessor: @unchecked Sendable {
     private var _isMuted = true
     private var _wsTask: URLSessionWebSocketTask? = nil
     private var _onActivity: (@Sendable (Bool, Float) -> Void)? = nil
+    private var _onLocalAudioChunk: (@Sendable ([Float]) -> Void)? = nil
 
     var isMuted: Bool {
         get { stateLock.lock(); defer { stateLock.unlock() }; return _isMuted }
@@ -27,10 +28,15 @@ final class AudioProcessor: @unchecked Sendable {
         get { stateLock.lock(); defer { stateLock.unlock() }; return _onActivity }
         set { stateLock.lock(); defer { stateLock.unlock() }; _onActivity = newValue }
     }
+    
+    var onLocalAudioChunk: (@Sendable ([Float]) -> Void)? {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _onLocalAudioChunk }
+        set { stateLock.lock(); defer { stateLock.unlock() }; _onLocalAudioChunk = newValue }
+    }
 
     private let processingQueue = DispatchQueue(label: "com.friday.audio.processing", qos: .userInitiated)
 
-    func start(ws: URLSessionWebSocketTask?, onActivity: @escaping @Sendable (Bool, Float) -> Void) {
+    func start(ws: URLSessionWebSocketTask? = nil, onActivity: @escaping @Sendable (Bool, Float) -> Void) {
         self.wsTask = ws
         self.onActivity = onActivity
 
@@ -74,11 +80,12 @@ final class AudioProcessor: @unchecked Sendable {
             if muted { return }
 
             let ws = self.wsTask
+            let localCb = self.onLocalAudioChunk
             let conv = self.converter
             let target = self.targetFormat
 
             self.processingQueue.async {
-                guard let conv = conv, let ws = ws, let target = target else { return }
+                guard let conv = conv, let target = target else { return }
                 let ratio = 16000.0 / hwFormat.sampleRate
                 let outFrames = AVAudioFrameCount(Double(buffer.frameLength) * ratio)
                 guard outFrames > 0, let outBuf = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: outFrames) else { return }
@@ -90,16 +97,28 @@ final class AudioProcessor: @unchecked Sendable {
                 }
 
                 if status == .haveData, outBuf.frameLength > 0, let int16Data = outBuf.int16ChannelData {
-                    let chunk = Data(bytes: int16Data[0], count: Int(outBuf.frameLength) * 2)
+                    let frameCount = Int(outBuf.frameLength)
+                    let chunk = Data(bytes: int16Data[0], count: frameCount * 2)
+                    
+                    if let localCb = localCb {
+                        var floatArray = [Float](repeating: 0, count: frameCount)
+                        for i in 0..<frameCount {
+                            floatArray[i] = Float(int16Data[0][i]) / 32768.0
+                        }
+                        localCb(floatArray)
+                    }
+
                     self.stateLock.lock()
                     self.pcmBuffer.append(chunk)
                     if self.pcmBuffer.count >= self.maxBufferSize {
                         let toSend = self.pcmBuffer
                         self.pcmBuffer = Data()
                         self.stateLock.unlock()
-                        let b64 = toSend.base64EncodedString()
-                        let msg = #"{"realtime_input":{"media_chunks":[{"mime_type":"audio/pcm;rate=16000","data":""# + b64 + #""}]}}"#
-                        ws.send(.string(msg)) { _ in }
+                        if let ws = ws {
+                            let b64 = toSend.base64EncodedString()
+                            let msg = #"{"realtime_input":{"media_chunks":[{"mime_type":"audio/pcm;rate=16000","data":""# + b64 + #""}]}}"#
+                            ws.send(.string(msg)) { _ in }
+                        }
                     } else {
                         self.stateLock.unlock()
                     }

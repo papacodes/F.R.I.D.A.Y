@@ -215,7 +215,7 @@ struct BatteryIndicator: View {
             }
         }
         .onAppear { if isCritical { startPulsing() } }
-        .onChange(of: state.batteryLevel) { level in
+        .onChange(of: state.batteryLevel) { _, level in
             if level <= 10 { startPulsing() } else { isPulsing = false }
         }
     }

@@ -33,12 +33,12 @@ struct NotesSkill {
             return createNote(filename: filename, content: content)
         }
         do {
-            fileHandle.seekToEndOfFile()
+            try fileHandle.seekToEnd()
             let separator = "\n\n---\n\n" + content
             if let data = separator.data(using: .utf8) {
-                fileHandle.write(data)
+                try fileHandle.write(contentsOf: data)
             }
-            fileHandle.closeFile()
+            try fileHandle.close()
             return "Successfully updated note: \(filename)"
         } catch {
             return "Failed to update note: \(error.localizedDescription)"

@@ -19,7 +19,7 @@ struct Config {
         ]
 
         for url in paths {
-            if let content = try? String(contentsOf: url) {
+            if let content = try? String(contentsOf: url, encoding: .utf8) {
                 let lines = content.components(separatedBy: .newlines)
                 for line in lines {
                     let parts = line.components(separatedBy: "=")

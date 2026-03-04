@@ -53,7 +53,7 @@ struct MarqueeText: View {
             textWidth = width
         }
         .onAppear { scheduleScroll() }
-        .onChange(of: text) { _ in
+        .onChange(of: text) {
             animate = false
             scheduleScroll()
         }

@@ -56,6 +56,19 @@ enum FridayDetail: Equatable {
     case none, activity, weather
 }
 
+// MARK: - Brain Agents
+
+struct BrainAgent: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let type: AgentType
+    let isLocal: Bool
+    
+    enum AgentType {
+        case gemini, qwen, custom
+    }
+}
+
 // MARK: - Alert System
 
 struct SystemAlert: Identifiable, Equatable {
@@ -181,8 +194,18 @@ class FridayState: ObservableObject {
     @Published var currentToolLabel: String?
     @Published var hasGreetedThisSession: Bool = false
     @Published var longTermMemoryContext: String = ""
+    @Published var isLocalMode: Bool = true // Defaulting to Local mode
+    
+    // Multi-Agent tracking
+    @Published var availableAgents: [BrainAgent] = []
+    @Published var activeAgentID: String = "local-qwen-3.5"
 
-    let modelName: String = "Gemini 2.0 Flash"
+    var modelName: String {
+        if let agent = availableAgents.first(where: { $0.id == activeAgentID }) {
+            return agent.name
+        }
+        return isLocalMode ? "Qwen 3.5 2B (Local)" : "Gemini 2.0 Flash"
+    }
 
     var isActive: Bool {
         isListening || isSpeaking || isThinking || isFridaySessionActive

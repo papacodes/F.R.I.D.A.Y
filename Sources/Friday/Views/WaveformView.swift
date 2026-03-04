@@ -30,7 +30,7 @@ struct WaveformView: View {
             }
         }
         .onAppear { animating = isActive }
-        .onChange(of: isActive) { active in animating = active }
+        .onChange(of: isActive) { _, active in animating = active }
     }
 
     private func animationDuration(for index: Int) -> Double {
