@@ -3,16 +3,17 @@ import SwiftUI
 import Combine
 
 @MainActor
-final class LocalVoicePipeline: ObservableObject {
+final class LocalVoicePipeline: ObservableObject, FridayBrain {
     
     private let state: FridayState
     private let audioProcessor = AudioProcessor()
     private let brain = LocalBrainProcessor.shared
     
-    // Voice activity detection
     private var isRecording = false
     private var silenceTimer: Timer?
     private var currentAudioBuffer: [Float] = []
+    private var lastResponse: String? = nil
+    private var lastSpeechEndTime: Date = .distantPast
     
     init(state: FridayState) {
         self.state = state
@@ -35,10 +36,9 @@ final class LocalVoicePipeline: ObservableObject {
     func wake() async {
         print("Friday: Pipeline wake() called")
         if !brain.isReady {
-            print("Friday: Brain not ready, waiting...")
             start()
             state.addActivity(type: .warning, title: "System", subtitle: "Please wait for models to load...")
-            for i in 0..<300 {
+            for _ in 0..<300 {
                 if brain.isReady { break }
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
@@ -72,7 +72,7 @@ final class LocalVoicePipeline: ObservableObject {
         audioProcessor.start(ws: nil) { [weak self] isActive, rms in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
-                self.checkBargeIn(isActive: isActive)
+                self.checkBargeIn(isActive: isActive, rms: rms)
                 if isActive && self.isRecording {
                     self.resetSilenceTimer()
                 }
@@ -94,10 +94,10 @@ final class LocalVoicePipeline: ObservableObject {
             let response = try await brain.generate(prompt: prompt) { _ in }
             state.update(\.isThinking, to: false)
             
-            // CRITICAL: Mute mic before speaking
             audioProcessor.isMuted = true
             state.update(\.isSpeaking, to: true)
             await brain.speak(text: response)
+            self.lastSpeechEndTime = Date()
         } catch {
             state.update(\.isThinking, to: false)
         }
@@ -129,9 +129,19 @@ final class LocalVoicePipeline: ObservableObject {
         NotificationCenter.default.post(name: .fridayDismiss, object: nil)
     }
     
-    private func checkBargeIn(isActive: Bool) {
-        if state.isSpeaking && isActive {
-            print("Friday: Barge-in detected! Stopping speech.")
+    private func calculateSimilarity(_ new: String, _ old: String?) -> Double {
+        guard let old = old, !old.isEmpty, !new.isEmpty else { return 0.0 }
+        if new == old { return 1.0 }
+        let newWords = Set(new.lowercased().split(separator: " ").map(String.init))
+        let oldWords = Set(old.lowercased().split(separator: " ").map(String.init))
+        let common = newWords.intersection(oldWords)
+        return Double(common.count) / Double(max(newWords.count, oldWords.count))
+    }
+
+    private func checkBargeIn(isActive: Bool, rms: Float) {
+        guard state.isSpeaking, Date().timeIntervalSince(lastSpeechEndTime) > 0.6 else { return }
+        if rms > 0.20 {
+            print("Friday: Barge-in detected!")
             brain.stopSpeaking()
             state.update(\.isSpeaking, to: false)
             state.update(\.isListening, to: true)
@@ -157,8 +167,6 @@ final class LocalVoicePipeline: ObservableObject {
         isRecording = false
         state.update(\.isListening, to: false)
         state.update(\.isThinking, to: true)
-        
-        // CRITICAL: Strict muting during processing/speaking
         audioProcessor.isMuted = true
         
         let audioToProcess = currentAudioBuffer
@@ -166,50 +174,61 @@ final class LocalVoicePipeline: ObservableObject {
         
         do {
             let transcription = try await brain.transcribe(audio: audioToProcess)
-            print("Friday (Local): Heard: \(transcription)")
+            let cleanT = transcription.trimmingCharacters(in: .whitespacesAndNewlines)
             
-            if !transcription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                state.update(\.transcript, to: transcription)
-                // Clear transcript for Jarvis feedback
-                Task { @MainActor in try? await Task.sleep(nanoseconds: 2_000_000_000); if !self.state.isListening { self.state.update(\.transcript, to: "") } }
-                
-                let sentenceBuffer = SentenceBuffer { sentence in
-                    Task { @MainActor in
-                        self.state.update(\.isThinking, to: false)
-                        self.state.update(\.isSpeaking, to: true)
-                        await self.brain.speak(text: sentence)
-                    }
+            // Hardened Hallucination Filter
+            if cleanT.isEmpty || cleanT.contains("[") || cleanT.contains("(") || cleanT.count < 4 {
+                state.update(\.isThinking, to: false)
+                state.update(\.isListening, to: true)
+                audioProcessor.isMuted = false
+                isRecording = true
+                resetSilenceTimer()
+                return
+            }
+            
+            if calculateSimilarity(cleanT, lastResponse) > 0.8 { 
+                isRecording = true; resetSilenceTimer(); return 
+            }
+            
+            lastResponse = cleanT
+            print("Friday (Local): Heard: \(cleanT)")
+            state.update(\.transcript, to: cleanT)
+            
+            // Clear UI transcript after 2s
+            Task { @MainActor in 
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if !self.state.isListening { self.state.update(\.transcript, to: "") }
+            }
+            
+            let sentenceBuffer = SentenceBuffer { sentence in
+                Task { @MainActor in
+                    self.state.update(\.isThinking, to: false)
+                    self.state.update(\.isSpeaking, to: true)
+                    await self.brain.speak(text: sentence)
+                    self.lastSpeechEndTime = Date()
                 }
-                let response = try await brain.generate(prompt: transcription) { chunk in
-                    Task { await sentenceBuffer.append(chunk) }
-                }
-                await sentenceBuffer.flush()
-                var textToSpeak = "" // Already handled by streaming
-                if response.contains("```") {
-                    let parts = response.components(separatedBy: "```")
-                    var cleanText = ""
-                    for (index, part) in parts.enumerated() {
-                        if index % 2 == 0 {
-                            cleanText += part
-                        } else {
-                            let jsonString = part.replacingOccurrences(of: "tool_call", with: "")
-                                                 .replacingOccurrences(of: "json", with: "")
-                                                 .trimmingCharacters(in: .whitespacesAndNewlines)
-                            
-                            if let data = jsonString.data(using: .utf8),
-                               let call = try? JSONDecoder().decode(FunctionCallSimple.self, from: data) {
-                                state.addActivity(type: .toolCall, title: "Tool: \(call.name)")
-                                await handleToolCall(name: call.name, args: call.arguments)
-                            }
+            }
+            
+            let response = try await brain.generate(prompt: cleanT) { chunk in
+                Task { await sentenceBuffer.append(chunk) }
+            }
+            await sentenceBuffer.flush()
+            
+            // Handle Tool Calls from full response
+            if response.contains("```") {
+                let parts = response.components(separatedBy: "```")
+                for (index, part) in parts.enumerated() {
+                    if index % 2 != 0 {
+                        let jsonString = part.replacingOccurrences(of: "tool_call", with: "")
+                                             .replacingOccurrences(of: "json", with: "")
+                                             .trimmingCharacters(in: .whitespacesAndNewlines)
+                        
+                        if let data = jsonString.data(using: .utf8),
+                           let call = try? JSONDecoder().decode(FunctionCallSimple.self, from: data) {
+                            state.addActivity(type: .toolCall, title: "Tool: \(call.name)")
+                            await handleToolCall(name: call.name, args: call.arguments)
                         }
                     }
-                    textToSpeak = cleanText.trimmingCharacters(in: .whitespacesAndNewlines)
-                }
-                
-                if !textToSpeak.isEmpty {
-                    state.update(\.isThinking, to: false)
-                    state.update(\.isSpeaking, to: true)
-                    await brain.speak(text: textToSpeak)
                 }
             }
         } catch {
@@ -218,8 +237,7 @@ final class LocalVoicePipeline: ObservableObject {
         
         state.update(\.isSpeaking, to: false)
         state.update(\.isThinking, to: false)
-        
-        // CRITICAL: Only unmute after everything is finished
+        currentAudioBuffer = []
         isRecording = true
         state.update(\.isListening, to: true)
         audioProcessor.isMuted = false
@@ -228,7 +246,6 @@ final class LocalVoicePipeline: ObservableObject {
 
     private func handleToolCall(name: String, args: [String: String]) async {
         print("Friday (Local): executing \(name)")
-        
         let toolResult = await ToolDispatcher.shared.execute(name: name, args: args, state: state)
         var resultMessage = ""
         
@@ -241,6 +258,7 @@ final class LocalVoicePipeline: ObservableObject {
         
         if !resultMessage.isEmpty {
             await brain.speak(text: resultMessage)
+            self.lastSpeechEndTime = Date()
         }
     }
 }

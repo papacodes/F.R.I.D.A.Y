@@ -8,10 +8,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkeyManager: HotkeyManager?
     private var accessibilityCheckTimer: Timer?
 
-    static let pipeline = LocalVoicePipeline(state: FridayState.shared)
+    static let pipeline = FridayPipeline()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        Self.pipeline.start() // Start brain loading immediately, don't wait for AX
+        Task { await Self.pipeline.start() } // Start brain loading immediately, don't wait for AX
         
         if AXIsProcessTrusted() {
             launch()

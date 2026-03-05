@@ -22,7 +22,7 @@ enum NotchDisplayState: Equatable {
 // MARK: - Tab
 
 enum NotchTab: String, CaseIterable, Identifiable {
-    case home, music, calendar, reminders, notes
+    case home, music, calendar, reminders, notes, assistant
 
     var id: String { rawValue }
 
@@ -33,6 +33,7 @@ enum NotchTab: String, CaseIterable, Identifiable {
         case .calendar:  return "Calendar"
         case .reminders: return "Reminders"
         case .notes:     return "Notes"
+        case .assistant: return "Assistant"
         }
     }
 
@@ -43,6 +44,7 @@ enum NotchTab: String, CaseIterable, Identifiable {
         case .calendar:  return "calendar"
         case .reminders: return "checklist"
         case .notes:     return "note.text"
+        case .assistant: return "sparkles"
         }
     }
 }
@@ -65,7 +67,7 @@ struct BrainAgent: Identifiable, Equatable {
     let isLocal: Bool
     
     enum AgentType {
-        case gemini, qwen, custom
+        case gemini, qwen, llama, custom
     }
 }
 

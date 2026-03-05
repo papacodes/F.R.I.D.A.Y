@@ -3,7 +3,7 @@ import Foundation
 import SwiftUI
 
 @MainActor
-final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate {
+final class GeminiVoicePipeline: NSObject, URLSessionWebSocketDelegate, FridayBrain {
 
     private let state: FridayState
     private let audioProcessor = AudioProcessor()

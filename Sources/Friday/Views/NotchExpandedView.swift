@@ -23,15 +23,18 @@ struct NotchExpandedView: View {
             VStack(spacing: 0) {
                 HStack(alignment: .center) {
                     // Left: Model Status
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(state.isConnected ? Color.green : Color.red)
-                            .frame(width: 6, height: 6)
-                        Text(state.modelName.uppercased())
-                            .font(.system(size: 9, weight: .black, design: .rounded))
-                            .foregroundColor(.white.opacity(0.35))
-                            .tracking(1)
+                    Button(action: { withAnimation { state.activeTab = .assistant } }) {
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(state.isConnected ? Color.green : Color.red)
+                                .frame(width: 6, height: 6)
+                            Text(state.modelName.uppercased())
+                                .font(.system(size: 9, weight: .black, design: .rounded))
+                                .foregroundColor(.white.opacity(0.35))
+                                .tracking(1)
+                        }
                     }
+                    .buttonStyle(.plain)
 
                     Spacer()
 
@@ -79,6 +82,9 @@ struct NotchExpandedView: View {
                         .padding(.top, 66)
                 } else if state.activeTab == .calendar {
                     CalendarTabView(namespace: animation)
+                        .padding(.top, 66)
+                } else if state.activeTab == .assistant {
+                    AssistantTabView()
                         .padding(.top, 66)
                 } else {
                     FridayStatusPanelView(namespace: animation)

@@ -11,6 +11,7 @@ final class LocalBrainProcessor: ObservableObject {
     nonisolated(unsafe) var modelContainer: ModelContainer?
     nonisolated(unsafe) var whisperKit: WhisperKit?
     var isLoading = false
+    private var onStatus: (@Sendable (String) -> Void)?
     @Published var isReady = false
     
     private actor HistoryActor {
@@ -29,6 +30,7 @@ final class LocalBrainProcessor: ObservableObject {
     
     func setup(onStatus: @escaping @Sendable (String) -> Void) async {
         guard !isLoading else { return }
+        self.onStatus = onStatus
         isLoading = true
         defer { isLoading = false }
         await scanLocalModels()
@@ -36,7 +38,7 @@ final class LocalBrainProcessor: ObservableObject {
         let modelDir = home.appendingPathComponent("Models/friday")
         var qwenPath: URL?; var whisperPath: URL?
         if let contents = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil) {
-            qwenPath = contents.first { $0.lastPathComponent.lowercased().contains("qwen") }
+            qwenPath = contents.first { $0.lastPathComponent.contains("7B") } ?? contents.first { $0.lastPathComponent.lowercased().contains("qwen") }
             whisperPath = contents.first { $0.lastPathComponent.lowercased().contains("whisper") }
         }
         do {
@@ -53,6 +55,30 @@ final class LocalBrainProcessor: ObservableObject {
         } catch { onStatus("Qwen error.") }
         self.isReady = true
         onStatus("Friday is online.")
+    }
+
+    func switchAgent(id: String) async {
+        guard id != FridayState.shared.activeAgentID || modelContainer == nil else { return }
+        if id.contains("cloud-") {
+            self.modelContainer = nil
+            FridayState.shared.activeAgentID = id
+            FridayState.shared.isLocalMode = false
+            onStatus?("Switched to Gemini Cloud.")
+            return
+        }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let modelDir = home.appendingPathComponent("Models/friday")
+        let folderName = id.replacingOccurrences(of: "local-", with: "")
+        let path = modelDir.appendingPathComponent(folderName)
+        onStatus?("Loading \(folderName)...")
+        self.isReady = false
+        do {
+            self.modelContainer = try await MLXLMCommon.loadModelContainer(directory: path)
+            FridayState.shared.activeAgentID = id
+            FridayState.shared.isLocalMode = true
+            self.isReady = true
+            onStatus?("Model ready: \(folderName)")
+        } catch { onStatus?("Error loading model.") }
     }
     
     nonisolated func transcribe(audio: [Float]) async throws -> String {
@@ -110,15 +136,14 @@ final class LocalBrainProcessor: ObservableObject {
         }
     }
     func stopSpeaking() { NativeSpeechManager.shared.stop() }
-    
     private func scanLocalModels() async {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let modelDir = home.appendingPathComponent("Models/friday")
         guard let contents = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil) else { return }
         var foundAgents: [BrainAgent] = [BrainAgent(id: "cloud-gemini-2.0", name: "Gemini 2.0 Flash", type: .gemini, isLocal: false)]
-        for url in contents where url.lastPathComponent.contains("Qwen") {
-            foundAgents.append(BrainAgent(id: "local-\(url.lastPathComponent)", name: url.lastPathComponent.replacingOccurrences(of: "-", with: " "), type: .qwen, isLocal: true))
+        for url in contents where url.lastPathComponent.contains("Qwen") || url.lastPathComponent.contains("Llama") {
+            foundAgents.append(BrainAgent(id: "local-\(url.lastPathComponent)", name: url.lastPathComponent.replacingOccurrences(of: "-", with: " "), type: url.lastPathComponent.contains("Qwen") ? .qwen : .llama, isLocal: true))
         }
-        await MainActor.run { FridayState.shared.availableAgents = foundAgents }
+        FridayState.shared.availableAgents = foundAgents
     }
 }
