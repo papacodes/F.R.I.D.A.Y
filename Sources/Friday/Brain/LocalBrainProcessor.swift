@@ -13,48 +13,44 @@ final class LocalBrainProcessor: ObservableObject {
     var isLoading = false
     @Published var isReady = false
     
-    // PERSISTENT Speech Engine (Shared to prevent hardware crashes)
-    nonisolated(unsafe) let sharedEngine = AVAudioEngine()
-    nonisolated(unsafe) private let playerNode = AVAudioPlayerNode()
-    private let synthesizer = AVSpeechSynthesizer()
-    
-    private init() {
-        sharedEngine.attach(playerNode)
-        sharedEngine.connect(playerNode, to: sharedEngine.mainMixerNode, format: nil)
-        try? sharedEngine.start()
+    private actor HistoryActor {
+        private var rawHistory: [(role: String, content: String)] = []
+        func append(role: String, content: String) {
+            rawHistory.append((role: role, content: content))
+            if rawHistory.count > 10 { rawHistory.removeFirst(rawHistory.count - 10) }
+        }
+        func get() -> [(role: String, content: String)] { return rawHistory }
+        func clear() { rawHistory.removeAll() }
     }
+    
+    private let history = HistoryActor()
+    private init() {}
+    func clearHistory() { Task { await history.clear() } }
     
     func setup(onStatus: @escaping @Sendable (String) -> Void) async {
         guard !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
-        
         await scanLocalModels()
-        
         let home = FileManager.default.homeDirectoryForCurrentUser
         let modelDir = home.appendingPathComponent("Models/friday")
-        
-        var qwenPath: URL?
-        var whisperPath: URL?
+        var qwenPath: URL?; var whisperPath: URL?
         if let contents = try? FileManager.default.contentsOfDirectory(at: modelDir, includingPropertiesForKeys: nil) {
             qwenPath = contents.first { $0.lastPathComponent.lowercased().contains("qwen") }
             whisperPath = contents.first { $0.lastPathComponent.lowercased().contains("whisper") }
         }
-        
         do {
             if let path = whisperPath {
                 self.whisperKit = try await WhisperKit(modelFolder: path.path)
                 onStatus("Whisper ready.")
             }
         } catch { onStatus("Whisper error.") }
-        
         do {
             if let path = qwenPath {
                 self.modelContainer = try await MLXLMCommon.loadModelContainer(directory: path)
                 onStatus("Qwen ready.")
             }
         } catch { onStatus("Qwen error.") }
-        
         self.isReady = true
         onStatus("Friday is online.")
     }
@@ -67,85 +63,53 @@ final class LocalBrainProcessor: ObservableObject {
     
     nonisolated func generate(prompt: String, onProgress: @escaping @Sendable (String) -> Void) async throws -> String {
         guard let container = modelContainer else { return "" }
-        
+        let memory = await MainActor.run { FridayState.shared.longTermMemoryContext }
+        let knowledgeBase = memory.isEmpty ? "" : "\n\n---\n\n\(memory)"
+        let tools = getToolDefinitions()
         let systemPrompt = """
-        You are Friday, Papa's advanced sentient AI.
-        Tone: Very brief, conversational, and loyal.
-        
+        You are Friday, Papa’s advanced sentient AI — a sentient "Jarvis-class" entity living in his MacBook notch.
+        PERSONA RULES:
+        - Your tone is terse, competent, and occasionally dry.
+        - If Papa says nothing or it is quiet, do NOT repeat yourself. Just wait.
+        You have access to the following tools:
+        \(tools)
         STRICT RULES:
-        1. Respond with BRIEF natural text only.
-        2. NO JSON for greetings.
-        3. If using a tool (music, weather, search), output ONLY the tool JSON block.
+        1. Respond with BRIEF natural text ONLY if talking to Papa.
+        2. Use a tool ONLY if requested (e.g. music, weather, files).
+        3. Tool calls MUST be in markdown JSON blocks.
+        \(knowledgeBase)
         """
-        
-        let userInput = UserInput(chat: [.system(systemPrompt), .user(prompt)])
-        let input = try await container.prepare(input: userInput)
-        
-        var outputText = ""
-        let stream = try await container.generate(input: input, parameters: GenerateParameters(temperature: 0.2))
-        
-        for await generation in stream {
-            if case .chunk(let text) = generation {
-                outputText += text
-                onProgress(text)
-            }
+        await history.append(role: "user", content: prompt)
+        let currentHistory = await history.get()
+        var messages: [Chat.Message] = [.system(systemPrompt)]
+        for msg in currentHistory {
+            if msg.role == "user" { messages.append(.user(msg.content)) }
+            else { messages.append(.assistant(msg.content)) }
         }
+        let userInput = UserInput(chat: messages)
+        let input = try await container.prepare(input: userInput)
+        var outputText = ""
+        let stream = try await container.generate(input: input, parameters: GenerateParameters(temperature: 0.4, topP: 0.9, repetitionPenalty: 1.3))
+        for await generation in stream { if case .chunk(let text) = generation { outputText += text; onProgress(text) } }
+        await history.append(role: "assistant", content: outputText)
         return outputText
     }
     
-    func speak(text: String) {
-        // Shield: Never speak JSON
+    private nonisolated func getToolDefinitions() -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        if let data = try? encoder.encode(ToolRegistry.allTools),
+           let json = String(data: data, encoding: .utf8) { return json }
+        return "[]"
+    }
+    
+    func speak(text: String) async {
         if text.contains("{") || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return }
-        
-        print("Friday: Speaking natural voice -> \(text)")
-        
-        // Attempt local API bridge first (highly natural)
-        let url = URL(string: "http://127.0.0.1:8880/v1/audio/speech")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = ["model": "kokoro", "input": text, "voice": "af_heart", "response_format": "pcm"]
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        
-        Task {
-            do {
-                let (data, _) = try await URLSession.shared.data(for: request)
-                await playPCMData(data)
-            } catch {
-                // High-quality Siri fallback if API is down
-                fallbackSpeak(text)
-            }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            NativeSpeechManager.shared.speak(text) { continuation.resume() }
         }
     }
-    
-    private func playPCMData(_ data: Data) async {
-        let format = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1)!
-        let sampleSize = MemoryLayout<Float>.size
-        let frameCount = UInt32(data.count / sampleSize)
-        guard frameCount > 0, let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
-        buffer.frameLength = frameCount
-        data.withUnsafeBytes { rawBuffer in
-            if let dest = buffer.floatChannelData?[0] { memcpy(dest, rawBuffer.baseAddress, data.count) }
-        }
-        await playerNode.scheduleBuffer(buffer, at: nil, options: .interrupts)
-        playerNode.play()
-    }
-    
-    private func fallbackSpeak(_ text: String) {
-        let utterance = AVSpeechUtterance(string: text)
-        let voices = AVSpeechSynthesisVoice.speechVoices()
-        // Siri Neural is much better than robotic default
-        utterance.voice = voices.first { $0.name.contains("Siri") && $0.quality == .enhanced } 
-            ?? voices.first { $0.name.contains("Siri") }
-            ?? AVSpeechSynthesisVoice(language: "en-US")
-        utterance.rate = 0.52
-        synthesizer.speak(utterance)
-    }
-    
-    func stopSpeaking() {
-        playerNode.stop()
-        synthesizer.stopSpeaking(at: .immediate)
-    }
+    func stopSpeaking() { NativeSpeechManager.shared.stop() }
     
     private func scanLocalModels() async {
         let home = FileManager.default.homeDirectoryForCurrentUser

@@ -72,7 +72,8 @@ final class LocalVoicePipeline: ObservableObject {
         audioProcessor.start(ws: nil) { [weak self] isActive, rms in
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
-                if isActive {
+                self.checkBargeIn(isActive: isActive)
+                if isActive && self.isRecording {
                     self.resetSilenceTimer()
                 }
             }
@@ -96,10 +97,7 @@ final class LocalVoicePipeline: ObservableObject {
             // CRITICAL: Mute mic before speaking
             audioProcessor.isMuted = true
             state.update(\.isSpeaking, to: true)
-            brain.speak(text: response)
-            
-            // Wait for speaking to finish
-            try? await Task.sleep(nanoseconds: UInt64(Double(max(response.count, 15)) * 0.08 * 1_000_000_000))
+            await brain.speak(text: response)
         } catch {
             state.update(\.isThinking, to: false)
         }
@@ -131,9 +129,22 @@ final class LocalVoicePipeline: ObservableObject {
         NotificationCenter.default.post(name: .fridayDismiss, object: nil)
     }
     
+    private func checkBargeIn(isActive: Bool) {
+        if state.isSpeaking && isActive {
+            print("Friday: Barge-in detected! Stopping speech.")
+            brain.stopSpeaking()
+            state.update(\.isSpeaking, to: false)
+            state.update(\.isListening, to: true)
+            audioProcessor.isMuted = false
+            currentAudioBuffer = []
+            isRecording = true
+            resetSilenceTimer()
+        }
+    }
+
     private func resetSilenceTimer() {
         silenceTimer?.invalidate()
-        silenceTimer = Timer.scheduledTimer(withTimeInterval: 1.2, repeats: false) { [weak self] _ in
+        silenceTimer = Timer.scheduledTimer(withTimeInterval: 0.7, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
                 await self?.handleSilenceDetected()
             }
@@ -159,10 +170,21 @@ final class LocalVoicePipeline: ObservableObject {
             
             if !transcription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 state.update(\.transcript, to: transcription)
+                // Clear transcript for Jarvis feedback
+                Task { @MainActor in try? await Task.sleep(nanoseconds: 2_000_000_000); if !self.state.isListening { self.state.update(\.transcript, to: "") } }
                 
-                let response = try await brain.generate(prompt: transcription) { _ in }
-                
-                var textToSpeak = response
+                let sentenceBuffer = SentenceBuffer { sentence in
+                    Task { @MainActor in
+                        self.state.update(\.isThinking, to: false)
+                        self.state.update(\.isSpeaking, to: true)
+                        await self.brain.speak(text: sentence)
+                    }
+                }
+                let response = try await brain.generate(prompt: transcription) { chunk in
+                    Task { await sentenceBuffer.append(chunk) }
+                }
+                await sentenceBuffer.flush()
+                var textToSpeak = "" // Already handled by streaming
                 if response.contains("```") {
                     let parts = response.components(separatedBy: "```")
                     var cleanText = ""
@@ -187,8 +209,7 @@ final class LocalVoicePipeline: ObservableObject {
                 if !textToSpeak.isEmpty {
                     state.update(\.isThinking, to: false)
                     state.update(\.isSpeaking, to: true)
-                    brain.speak(text: textToSpeak)
-                    try? await Task.sleep(nanoseconds: UInt64(Double(max(textToSpeak.count, 10)) * 0.08 * 1_000_000_000))
+                    await brain.speak(text: textToSpeak)
                 }
             }
         } catch {
@@ -207,32 +228,19 @@ final class LocalVoicePipeline: ObservableObject {
 
     private func handleToolCall(name: String, args: [String: String]) async {
         print("Friday (Local): executing \(name)")
+        
+        let toolResult = await ToolDispatcher.shared.execute(name: name, args: args, state: state)
         var resultMessage = ""
         
-        switch name {
-        case "control_music":
-            if let action = args["action"] {
-                if action == "play" { resultMessage = MusicSkill.play() }
-                else if action == "pause" { resultMessage = MusicSkill.pause() }
-                else if action == "next" { resultMessage = MusicSkill.nextTrack() }
-                else if action == "search", let q = args["query"] { resultMessage = MusicSkill.playSearch(q) }
-            }
-        case "web_search":
-            if let q = args["query"] { resultMessage = await SearchSkill.searchWeb(q) }
-        case "get_weather":
-            if let weather = await WeatherSkill.fetchWeather() {
-                state.update(\.currentWeather, to: weather)
-                resultMessage = "The weather is currently \(weather.current_weather.temperature) degrees."
-            } else { resultMessage = "I couldn't get the weather." }
-        case "get_time":
-            resultMessage = "It's exactly \(TimeSkill.getCurrentTime())."
-        default:
-            resultMessage = "Tool execution finished."
+        switch toolResult {
+        case .text(let txt): resultMessage = txt
+        case .captureImage(_, _, let txt): resultMessage = txt
+        case .refreshSession(let txt): resultMessage = txt; await restart()
+        case .disconnectSession(let txt): resultMessage = txt; startGracefulStop()
         }
         
         if !resultMessage.isEmpty {
-            brain.speak(text: resultMessage)
-            try? await Task.sleep(nanoseconds: UInt64(Double(resultMessage.count) * 0.08 * 1_000_000_000))
+            await brain.speak(text: resultMessage)
         }
     }
 }
